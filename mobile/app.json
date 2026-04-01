@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "Swing Trade Bot",
+    "slug": "swing-trade-bot",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.example.swingtradebot"
+    },
+    "web": {
+      "bundler": "metro"
+    }
+  }
+}
