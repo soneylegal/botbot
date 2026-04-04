@@ -1,7 +1,7 @@
 import React from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import Ionicons from 'react-native-vector-icons/Ionicons';
-import { colors } from '../theme';
+import { useAppTheme } from '../theme';
 import { BacktestScreen } from '../screens/BacktestScreen';
 import { DashboardScreen } from '../screens/DashboardScreen';
 import { LogsScreen } from '../screens/LogsScreen';
@@ -30,13 +30,15 @@ const iconByRoute: Record<keyof RootTabParamList, string> = {
 };
 
 export function AppNavigator() {
+  const { colors } = useAppTheme();
+
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: true,
         headerStyle: { backgroundColor: colors.card },
         headerTintColor: colors.text,
-        tabBarStyle: { backgroundColor: colors.card, borderTopColor: '#1f2937' },
+        tabBarStyle: { backgroundColor: colors.card, borderTopColor: colors.border },
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.muted,
         tabBarIcon: ({ color, size }) => (

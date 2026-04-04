@@ -44,6 +44,9 @@ class DashboardResponse(BaseModel):
     status: str
     daily_pnl: float
     asset: str | None = None
+    price_status: str = "live"
+    position_qty: float = 0
+    avg_entry_price: float = 0
     chart: list[TickPoint]
 
 
@@ -74,6 +77,13 @@ class BacktestResponse(BaseModel):
 
 class BacktestRunIn(BaseModel):
     period_label: str = "6 Months"
+    asset: str | None = None
+
+
+class AssetUniverseOut(BaseModel):
+    b3: list[str]
+    crypto: list[str]
+    all: list[str]
 
 
 class LogIn(BaseModel):
@@ -84,6 +94,7 @@ class LogIn(BaseModel):
 
 class LogOut(BaseModel):
     id: int
+    user_id: str | None = None
     level: str
     message: str
     details: dict[str, Any] | None = None
@@ -127,6 +138,11 @@ class PaperOrderOut(BaseModel):
 
 class PaperStateResponse(BaseModel):
     balance: float
+    focus_asset: str
+    current_price: float
+    price_status: str = "live"
+    floating_pnl: float
     open_position_asset: str | None
     open_position_qty: float
+    avg_entry_price: float
     recent_orders: list[PaperOrderOut]

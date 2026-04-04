@@ -1,29 +1,80 @@
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Dimensions, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Animated, Dimensions, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { LineChart } from 'react-native-chart-kit';
-import { colors } from '../theme';
+import { PinchGestureHandler, State } from 'react-native-gesture-handler';
+import { useAppTheme } from '../theme';
+import { onConfigChanged } from '../services/events';
 import { DashboardData, fetchDashboard, getMarketWsUrl } from '../services/api';
 
 const width = Dimensions.get('window').width - 24;
+const CRYPTO_ASSETS = new Set(['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'TRX', 'AVAX', 'DOT']);
+
+function normalizeChart(points: Array<{ t: string; p: number }>) {
+  let lastValid = 0;
+  const normalized: Array<{ t: string; p: number }> = [];
+  for (const point of points) {
+    const value = Number(point.p);
+    if (Number.isFinite(value) && value > 0) {
+      lastValid = value;
+      normalized.push({ ...point, p: value });
+    } else if (lastValid > 0) {
+      normalized.push({ ...point, p: lastValid });
+    }
+  }
+  return normalized;
+}
 
 export function DashboardScreen() {
+  const { colors, darkMode } = useAppTheme();
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [wsNonce, setWsNonce] = useState(0);
+  const styles = useMemo(() => createStyles(colors), [colors]);
+  const pinchScale = useRef(new Animated.Value(1)).current;
+  const onPinchEvent = Animated.event([{ nativeEvent: { scale: pinchScale } }], { useNativeDriver: true });
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
+      setLoading(true);
       const res = await fetchDashboard();
       setData(res);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+
+      setData((prev) => (prev ? { ...prev, chart: [] } : prev));
+
+      const run = async () => {
+        if (!active) return;
+        await load();
+      };
+
+      void run();
+      const timer = setInterval(() => {
+        void run();
+      }, 8000);
+
+      return () => {
+        active = false;
+        clearInterval(timer);
+      };
+    }, [load])
+  );
 
   useEffect(() => {
-    load();
-    const timer = setInterval(load, 8000);
-    return () => clearInterval(timer);
-  }, []);
+    const off = onConfigChanged(() => {
+      setData((prev) => (prev ? { ...prev, asset: undefined, chart: [] } : prev));
+      setWsNonce((v) => v + 1);
+      void load();
+    });
+    return off;
+  }, [load]);
 
   useEffect(() => {
     const asset = data?.asset;
@@ -39,8 +90,13 @@ export function DashboardScreen() {
         const payload = JSON.parse(event.data);
         setData((prev) => {
           if (!prev) return prev;
-          const nextChart = [...prev.chart, { t: payload.tick_at, p: Number(payload.price) }].slice(-80);
-          return { ...prev, asset: payload.asset || prev.asset, chart: nextChart };
+          const raw = Number(payload.price);
+          const safePrice = Number.isFinite(raw) && raw > 0 ? raw : Number(prev.chart[prev.chart.length - 1]?.p ?? 0);
+          const nextChart = [...prev.chart, { t: payload.tick_at, p: safePrice }].slice(-80);
+          const qty = Number(prev.position_qty ?? 0);
+          const avg = Number(prev.avg_entry_price ?? 0);
+          const nextPnl = qty > 0 && avg > 0 ? (safePrice - avg) * qty : prev.daily_pnl;
+          return { ...prev, asset: payload.asset || prev.asset, chart: nextChart, daily_pnl: nextPnl };
         });
       } catch {
         // ignore malformed payload
@@ -51,7 +107,7 @@ export function DashboardScreen() {
       clearInterval(heartbeat);
       ws.close();
     };
-  }, [data?.asset]);
+  }, [data?.asset, wsNonce]);
 
   if (loading && !data) {
     return (
@@ -61,7 +117,18 @@ export function DashboardScreen() {
     );
   }
 
-  const prices = data?.chart?.map((p) => p.p) ?? [0];
+  const normalized = normalizeChart(data?.chart ?? []);
+  const prices = normalized.map((p) => p.p);
+  const safePrices = prices.length ? prices : [0];
+  const chartBackground = darkMode ? '#0b0f1a' : '#ffffff';
+  const asset = (data?.asset ?? '').toUpperCase();
+  const currencySymbol = CRYPTO_ASSETS.has(asset) ? 'US$ ' : 'R$ ';
+
+  const onPinchStateChange = (event: any) => {
+    if (event.nativeEvent.oldState === State.ACTIVE) {
+      Animated.spring(pinchScale, { toValue: 1, useNativeDriver: true }).start();
+    }
+  };
 
   return (
     <ScrollView
@@ -70,30 +137,37 @@ export function DashboardScreen() {
     >
       <Text style={styles.title}>Ativo: {data?.asset ?? '-'}</Text>
 
-      <LineChart
-        data={{ labels: prices.map(() => ''), datasets: [{ data: prices }] }}
-        width={width}
-        height={240}
-        yAxisLabel="R$ "
-        withDots={false}
-        withInnerLines
-        chartConfig={{
-          backgroundGradientFrom: '#0b0f1a',
-          backgroundGradientTo: '#0b0f1a',
-          color: () => colors.primary,
-          labelColor: () => colors.muted,
-          decimalPlaces: 2,
-        }}
-        bezier
-        style={styles.chart}
-      />
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chartPanContainer}>
+        <PinchGestureHandler onGestureEvent={onPinchEvent} onHandlerStateChange={onPinchStateChange}>
+          <Animated.View style={{ transform: [{ scale: pinchScale }] }}>
+            <LineChart
+              data={{ labels: safePrices.map(() => ''), datasets: [{ data: safePrices }] }}
+              width={Math.max(width, safePrices.length * 10)}
+              height={240}
+              yAxisLabel={currencySymbol}
+              withDots={false}
+              withInnerLines
+              chartConfig={{
+                backgroundGradientFrom: chartBackground,
+                backgroundGradientTo: chartBackground,
+                color: () => colors.primary,
+                labelColor: () => colors.muted,
+                decimalPlaces: 2,
+              }}
+              bezier
+              style={styles.chart}
+            />
+          </Animated.View>
+        </PinchGestureHandler>
+      </ScrollView>
 
       <View style={styles.card}>
         <Text style={styles.row}>Bot Status: <Text style={styles.success}>{data?.status}</Text></Text>
+        <Text style={styles.subtle}>Fonte de preço: {data?.price_status ?? 'Preço em Cache'}</Text>
         <Text style={styles.row}>
           P/L Diário:{' '}
           <Text style={Number(data?.daily_pnl) >= 0 ? styles.success : styles.error}>
-            {Number(data?.daily_pnl).toFixed(2)}
+            {currencySymbol}{Number(data?.daily_pnl).toFixed(2)}
           </Text>
         </Text>
       </View>
@@ -101,13 +175,16 @@ export function DashboardScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.bg, padding: 12 },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
-  title: { color: colors.text, fontSize: 16, marginBottom: 10 },
-  chart: { borderRadius: 12 },
-  card: { marginTop: 16, backgroundColor: colors.card, borderRadius: 12, padding: 14 },
-  row: { color: colors.text, fontSize: 16, marginBottom: 6 },
-  success: { color: colors.success },
-  error: { color: colors.danger },
-});
+const createStyles = (colors: ReturnType<typeof useAppTheme>['colors']) =>
+  StyleSheet.create({
+    container: { flex: 1, backgroundColor: colors.bg, padding: 12 },
+    center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
+    title: { color: colors.text, fontSize: 16, marginBottom: 10 },
+    chartPanContainer: { paddingRight: 12 },
+    chart: { borderRadius: 12 },
+    card: { marginTop: 16, backgroundColor: colors.card, borderRadius: 12, padding: 14 },
+    row: { color: colors.text, fontSize: 16, marginBottom: 6 },
+    subtle: { color: colors.muted, fontSize: 12, marginBottom: 8 },
+    success: { color: colors.success },
+    error: { color: colors.danger },
+  });

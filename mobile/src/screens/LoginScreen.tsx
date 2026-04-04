@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { colors } from '../theme';
+import { useAppTheme } from '../theme';
 import { loginWithCredentials, registerUser } from '../services/api';
 
 type Props = {
@@ -8,9 +8,11 @@ type Props = {
 };
 
 export function LoginScreen({ onAuthenticated }: Props) {
+  const { colors } = useAppTheme();
   const [email, setEmail] = useState('admin@botbot.local');
   const [password, setPassword] = useState('admin123');
   const [loading, setLoading] = useState(false);
+  const styles = useMemo(() => createStyles(colors), [colors]);
 
   const doLogin = async () => {
     setLoading(true);
@@ -72,21 +74,22 @@ export function LoginScreen({ onAuthenticated }: Props) {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.bg, padding: 20, justifyContent: 'center' },
-  title: { color: colors.text, fontSize: 28, fontWeight: '700', textAlign: 'center' },
-  subtitle: { color: colors.muted, fontSize: 16, textAlign: 'center', marginBottom: 20 },
-  input: {
-    backgroundColor: colors.card,
-    borderColor: '#374151',
-    borderWidth: 1,
-    borderRadius: 10,
-    color: colors.text,
-    padding: 12,
-    marginBottom: 12,
-  },
-  button: { backgroundColor: colors.primary, borderRadius: 10, alignItems: 'center', padding: 14, marginTop: 6 },
-  buttonText: { color: '#fff', fontWeight: '700' },
-  buttonSecondary: { alignItems: 'center', padding: 12, marginTop: 10 },
-  buttonSecondaryText: { color: colors.muted },
-});
+const createStyles = (colors: ReturnType<typeof useAppTheme>['colors']) =>
+  StyleSheet.create({
+    container: { flex: 1, backgroundColor: colors.bg, padding: 20, justifyContent: 'center' },
+    title: { color: colors.text, fontSize: 28, fontWeight: '700', textAlign: 'center' },
+    subtitle: { color: colors.muted, fontSize: 16, textAlign: 'center', marginBottom: 20 },
+    input: {
+      backgroundColor: colors.card,
+      borderColor: colors.border,
+      borderWidth: 1,
+      borderRadius: 10,
+      color: colors.text,
+      padding: 12,
+      marginBottom: 12,
+    },
+    button: { backgroundColor: colors.primary, borderRadius: 10, alignItems: 'center', padding: 14, marginTop: 6 },
+    buttonText: { color: '#fff', fontWeight: '700' },
+    buttonSecondary: { alignItems: 'center', padding: 12, marginTop: 10 },
+    buttonSecondaryText: { color: colors.muted },
+  });

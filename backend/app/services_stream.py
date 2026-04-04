@@ -16,6 +16,7 @@ from app.services_exchange import ExchangeService
 class ConnectionManager:
     def __init__(self):
         self.connections: dict[str, set[WebSocket]] = {}
+        self.close_requests: set[str] = set()
 
     async def connect(self, asset: str, websocket: WebSocket):
         await websocket.accept()
@@ -32,6 +33,24 @@ class ConnectionManager:
                 await ws.send_json(payload)
             except Exception:
                 self.disconnect(asset, ws)
+
+    def request_close_asset(self, asset: str):
+        self.close_requests.add(asset.upper())
+
+    async def process_close_requests(self):
+        if not self.close_requests:
+            return
+        pending = list(self.close_requests)
+        self.close_requests.clear()
+        for asset in pending:
+            peers = list(self.connections.get(asset, set()))
+            for ws in peers:
+                try:
+                    await ws.close(code=1012, reason="Asset atualizado")
+                except Exception:
+                    pass
+                finally:
+                    self.disconnect(asset, ws)
 
 
 manager = ConnectionManager()
@@ -70,6 +89,7 @@ async def market_stream_loop(stop_event: asyncio.Event):
     while not stop_event.is_set():
         db = SessionLocal()
         try:
+            await manager.process_close_requests()
             asset = _current_asset(db)
             price = _next_price(db, asset)
             tick = _insert_tick(db, asset, price)
@@ -82,6 +102,9 @@ async def market_stream_loop(stop_event: asyncio.Event):
                     "tick_at": tick.tick_at.isoformat(),
                 },
             )
+        except Exception:
+            # protege loop de stream contra queda total do processo
+            pass
         finally:
             db.close()
 

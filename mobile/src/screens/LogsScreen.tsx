@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 import { fetchLogs, LogRow } from '../services/api';
-import { colors } from '../theme';
+import { useAppTheme } from '../theme';
 
 const levelConfig = {
   success: { icon: 'checkmark-circle', bg: '#14532d' },
@@ -12,14 +13,18 @@ const levelConfig = {
 };
 
 export function LogsScreen() {
+  const { colors } = useAppTheme();
   const [rows, setRows] = useState<LogRow[]>([]);
+  const styles = useMemo(() => createStyles(colors), [colors]);
 
-  useEffect(() => {
-    (async () => {
-      const data = await fetchLogs();
-      setRows(data);
-    })();
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        const data = await fetchLogs();
+        setRows(data);
+      })();
+    }, [])
+  );
 
   return (
     <FlatList
@@ -43,16 +48,17 @@ export function LogsScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  list: { flex: 1, backgroundColor: colors.bg, padding: 10 },
-  row: {
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  message: { color: '#fff', fontSize: 15, fontWeight: '600' },
-  time: { color: '#e5e7eb', fontSize: 12, marginTop: 4 },
-  empty: { color: colors.muted, textAlign: 'center', marginTop: 30 },
-});
+const createStyles = (colors: ReturnType<typeof useAppTheme>['colors']) =>
+  StyleSheet.create({
+    list: { flex: 1, backgroundColor: colors.bg, padding: 10 },
+    row: {
+      borderRadius: 10,
+      padding: 12,
+      marginBottom: 8,
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
+    message: { color: '#fff', fontSize: 15, fontWeight: '600' },
+    time: { color: '#e5e7eb', fontSize: 12, marginTop: 4 },
+    empty: { color: colors.muted, textAlign: 'center', marginTop: 30 },
+  });

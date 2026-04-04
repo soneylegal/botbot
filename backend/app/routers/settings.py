@@ -26,7 +26,7 @@ def get_settings(db: Session = Depends(get_db), _: User = Depends(get_current_us
 
 @router.put("", response_model=SettingsOut)
 def save_settings(payload: SettingsIn, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    item = update_settings(db, payload)
+    item = update_settings(db, payload, user_id=_.id)
     return SettingsOut(
         api_key_masked=item.api_key_masked,
         api_secret_masked=item.api_secret_masked,
@@ -40,5 +40,5 @@ def save_settings(payload: SettingsIn, db: Session = Depends(get_db), _: User = 
 
 @router.post("/test-connection")
 def test_exchange_connection_route(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    ok, message = test_exchange_connection(db)
+    ok, message = test_exchange_connection(db, user_id=_.id)
     return {"ok": ok, "message": message}

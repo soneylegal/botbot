@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
 
@@ -11,6 +11,9 @@ export const api = axios.create({
 let accessToken = '';
 let refreshToken = '';
 let isRefreshing = false;
+let refreshSubscribers: Array<(token: string) => void> = [];
+
+type RetryableRequestConfig = InternalAxiosRequestConfig & { _retry?: boolean };
 
 export function setAuthTokens(tokens: { access_token: string; refresh_token?: string }) {
   accessToken = tokens.access_token;
@@ -45,15 +48,28 @@ api.interceptors.request.use((config) => {
 
 api.interceptors.response.use(
   (response) => response,
-  async (error) => {
-    const original = error.config;
-    if (error?.response?.status !== 401 || original?._retry) {
+  async (error: AxiosError) => {
+    const original = error.config as RetryableRequestConfig | undefined;
+    if (!original) {
       throw error;
     }
 
-    if (!refreshToken || isRefreshing) {
+    if (error?.response?.status !== 401 || original._retry) {
+      throw error;
+    }
+
+    if (!refreshToken) {
       clearAuthTokens();
       throw error;
+    }
+
+    if (isRefreshing) {
+      const token = await new Promise<string>((resolve) => {
+        refreshSubscribers.push(resolve);
+      });
+      original.headers.Authorization = `Bearer ${token}`;
+      original._retry = true;
+      return api(original);
     }
 
     try {
@@ -62,10 +78,13 @@ api.interceptors.response.use(
         refresh_token: refreshToken,
       });
       setAuthTokens(data);
+      refreshSubscribers.forEach((cb) => cb(data.access_token));
+      refreshSubscribers = [];
       original._retry = true;
       original.headers.Authorization = `Bearer ${accessToken}`;
       return api(original);
     } catch (refreshError) {
+      refreshSubscribers = [];
       clearAuthTokens();
       throw refreshError;
     } finally {
@@ -83,6 +102,9 @@ export type DashboardData = {
   status: string;
   daily_pnl: number;
   asset?: string;
+  price_status?: string;
+  position_qty?: number;
+  avg_entry_price?: number;
   chart: Array<{ t: string; p: number }>;
 };
 
@@ -92,6 +114,12 @@ export type StrategyConfig = {
   timeframe: string;
   ma_short_period: number;
   ma_long_period: number;
+};
+
+export type AssetUniverse = {
+  b3: string[];
+  crypto: string[];
+  all: string[];
 };
 
 export type BacktestData = {
@@ -123,8 +151,13 @@ export type SettingsData = {
 
 export type PaperState = {
   balance: number;
+  focus_asset: string;
+  current_price: number;
+  price_status?: string;
+  floating_pnl: number;
   open_position_asset?: string;
   open_position_qty: number;
+  avg_entry_price: number;
   recent_orders: Array<{
     id: number;
     side: 'buy' | 'sell';
@@ -146,6 +179,11 @@ export async function fetchStrategy() {
   return data;
 }
 
+export async function fetchAssetUniverse() {
+  const { data } = await api.get<AssetUniverse>('/strategy/assets');
+  return data;
+}
+
 export async function saveStrategy(payload: StrategyConfig) {
   const { data } = await api.put<StrategyConfig>('/strategy/config', payload);
   return data;
@@ -156,8 +194,8 @@ export async function fetchBacktest() {
   return data;
 }
 
-export async function runBacktest(period_label = '6 Months') {
-  const { data } = await api.post<BacktestData>('/backtest/run', { period_label });
+export async function runBacktest(period_label = '6 Months', asset?: string) {
+  const { data } = await api.post<BacktestData>('/backtest/run', { period_label, asset });
   return data;
 }
 
@@ -188,8 +226,9 @@ export async function testConnection() {
   return data;
 }
 
-export async function fetchPaperState() {
-  const { data } = await api.get<PaperState>('/paper/state');
+export async function fetchPaperState(asset?: string) {
+  const suffix = asset ? `?asset=${encodeURIComponent(asset)}` : '';
+  const { data } = await api.get<PaperState>(`/paper/state${suffix}`);
   return data;
 }
 
@@ -200,5 +239,16 @@ export async function paperBuy(payload: { asset: string; price: number; quantity
 
 export async function paperSell(payload: { asset: string; price: number; quantity: number }) {
   const { data } = await api.post('/paper/sell', payload);
+  return data;
+}
+
+export async function paperClosePosition() {
+  const { data } = await api.post('/paper/close');
+  return data;
+}
+
+export async function paperResetWallet(initialBalance?: number) {
+  const suffix = initialBalance && initialBalance > 0 ? `?initial_balance=${encodeURIComponent(String(initialBalance))}` : '';
+  const { data } = await api.post<PaperState>(`/paper/reset${suffix}`);
   return data;
 }

@@ -14,20 +14,28 @@ router = APIRouter(prefix="/logs", tags=["Logs"])
 def get_logs(
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
-    items = list_logs(db, limit)
+    items = list_logs(db, user_id=current_user.id, limit=limit)
     return [
-        LogOut(id=i.id, level=i.level.value, message=i.message, details=i.details, created_at=i.created_at)
+        LogOut(
+            id=i.id,
+            user_id=(str(i.user_id) if i.user_id else None),
+            level=i.level.value,
+            message=i.message,
+            details=i.details,
+            created_at=i.created_at,
+        )
         for i in items
     ]
 
 
 @router.post("", response_model=LogOut)
-def add_log(payload: LogIn, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    item = create_log(db, payload)
+def add_log(payload: LogIn, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    item = create_log(db, payload, user_id=current_user.id)
     return LogOut(
         id=item.id,
+        user_id=(str(item.user_id) if item.user_id else None),
         level=item.level.value,
         message=item.message,
         details=item.details,
