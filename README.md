@@ -11,15 +11,40 @@ Estrutura inicial com:
 - backend/ → API e regras iniciais
 - mobile/ → app React Native com telas e navegação
 - db/schema.sql → schema PostgreSQL
+- docker-compose.yml → orquestra PostgreSQL + Backend
 
-## 1) Banco PostgreSQL
+## Execução rápida (recomendado)
+
+Suba banco + API com Docker Compose (sem mobile):
+
+1. Na raiz do projeto, rode:
+   - `docker compose up --build -d`
+2. API disponível em:
+   - http://localhost:8000
+3. Swagger:
+   - http://localhost:8000/docs
+
+O PostgreSQL é inicializado automaticamente com [db/schema.sql](db/schema.sql).
+
+### Reinicializar banco do zero
+
+Para apagar volume e reexecutar o schema:
+
+- `docker compose down -v`
+- `docker compose up --build -d`
+
+## Execução manual (alternativa)
+
+Use este modo apenas se não quiser Docker para backend/banco.
+
+### 1) Banco PostgreSQL
 
 Crie o banco e rode o schema:
 
 1. Crie um banco `swingbot` no PostgreSQL.
 2. Execute o arquivo [db/schema.sql](db/schema.sql).
 
-## 2) Backend (FastAPI)
+### 2) Backend (FastAPI)
 
 No diretório backend:
 
@@ -56,6 +81,8 @@ No diretório mobile:
 Defina a URL da API em [mobile/src/services/api.ts](mobile/src/services/api.ts).
 
 > Em device físico, troque `localhost` pelo IP da máquina.
+
+> O mobile não está dockerizado por design.
 
 ## Telas implementadas
 
