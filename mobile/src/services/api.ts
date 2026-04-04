@@ -1,10 +1,73 @@
 import axios from 'axios';
 
+const API_BASE_URL = 'http://localhost:8000';
+
 export const api = axios.create({
   // Ajuste para IP local quando testar no device físico.
-  baseURL: 'http://localhost:8000',
+  baseURL: API_BASE_URL,
   timeout: 8000,
 });
+
+let accessToken = '';
+let refreshToken = '';
+let isRefreshing = false;
+
+async function ensureAuth() {
+  if (accessToken) return;
+  const email = 'admin@botbot.local';
+  const password = 'admin123';
+
+  try {
+    const { data } = await axios.post<{ access_token: string; refresh_token?: string }>(`${API_BASE_URL}/auth/login`, { email, password });
+    accessToken = data.access_token;
+    refreshToken = data.refresh_token ?? '';
+  } catch {
+    await axios.post(`${API_BASE_URL}/auth/register`, { email, password });
+    const { data } = await axios.post<{ access_token: string; refresh_token?: string }>(`${API_BASE_URL}/auth/login`, { email, password });
+    accessToken = data.access_token;
+    refreshToken = data.refresh_token ?? '';
+  }
+}
+
+api.interceptors.request.use(async (config) => {
+  await ensureAuth();
+  config.headers.Authorization = `Bearer ${accessToken}`;
+  return config;
+});
+
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const original = error.config;
+    if (error?.response?.status !== 401 || original?._retry) {
+      throw error;
+    }
+
+    if (!refreshToken || isRefreshing) {
+      accessToken = '';
+      throw error;
+    }
+
+    try {
+      isRefreshing = true;
+      const { data } = await axios.post<{ access_token: string; refresh_token?: string }>(`${API_BASE_URL}/auth/refresh`, {
+        refresh_token: refreshToken,
+      });
+      accessToken = data.access_token;
+      refreshToken = data.refresh_token ?? refreshToken;
+      original._retry = true;
+      original.headers.Authorization = `Bearer ${accessToken}`;
+      return api(original);
+    } finally {
+      isRefreshing = false;
+    }
+  }
+);
+
+export function getMarketWsUrl(asset: string) {
+  const wsBase = API_BASE_URL.replace('http://', 'ws://').replace('https://', 'wss://');
+  return `${wsBase}/ws/market/${asset}`;
+}
 
 export type DashboardData = {
   status: string;
@@ -42,6 +105,8 @@ export type LogRow = {
 export type SettingsData = {
   api_key_masked?: string;
   api_secret_masked?: string;
+  exchange_name: string;
+  trade_mode: 'paper' | 'live';
   paper_trading: boolean;
   dark_mode: boolean;
 };
@@ -81,6 +146,11 @@ export async function fetchBacktest() {
   return data;
 }
 
+export async function runBacktest(period_label = '6 Months') {
+  const { data } = await api.post<BacktestData>('/backtest/run', { period_label });
+  return data;
+}
+
 export async function fetchLogs() {
   const { data } = await api.get<LogRow[]>('/logs?limit=100');
   return data;
@@ -94,6 +164,8 @@ export async function fetchSettings() {
 export async function saveSettings(payload: {
   api_key?: string;
   api_secret?: string;
+  exchange_name: string;
+  trade_mode: 'paper' | 'live';
   paper_trading: boolean;
   dark_mode: boolean;
 }) {

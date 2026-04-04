@@ -27,6 +27,21 @@ class OrderStatus(str, enum.Enum):
     pending = "pending"
 
 
+class TradeMode(str, enum.Enum):
+    paper = "paper"
+    live = "live"
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class StrategyConfig(Base):
     __tablename__ = "strategy_configs"
 
@@ -91,6 +106,10 @@ class AppSettings(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     api_key_masked: Mapped[str | None] = mapped_column(String(255), nullable=True)
     api_secret_masked: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    api_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    api_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    exchange_name: Mapped[str] = mapped_column(String(50), default="binance")
+    trade_mode: Mapped[TradeMode] = mapped_column(Enum(TradeMode), default=TradeMode.paper)
     paper_trading: Mapped[bool] = mapped_column(Boolean, default=True)
     dark_mode: Mapped[bool] = mapped_column(Boolean, default=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

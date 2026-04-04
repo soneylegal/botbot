@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Dimensions, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { LineChart } from 'react-native-chart-kit';
 import { colors } from '../theme';
-import { DashboardData, fetchDashboard } from '../services/api';
+import { DashboardData, fetchDashboard, getMarketWsUrl } from '../services/api';
 
 const width = Dimensions.get('window').width - 24;
 
@@ -24,6 +24,34 @@ export function DashboardScreen() {
     const timer = setInterval(load, 8000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const asset = data?.asset;
+    if (!asset) return;
+
+    const ws = new WebSocket(getMarketWsUrl(asset));
+    const heartbeat = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) ws.send('ping');
+    }, 10000);
+
+    ws.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        setData((prev) => {
+          if (!prev) return prev;
+          const nextChart = [...prev.chart, { t: payload.tick_at, p: Number(payload.price) }].slice(-80);
+          return { ...prev, asset: payload.asset || prev.asset, chart: nextChart };
+        });
+      } catch {
+        // ignore malformed payload
+      }
+    };
+
+    return () => {
+      clearInterval(heartbeat);
+      ws.close();
+    };
+  }, [data?.asset]);
 
   if (loading && !data) {
     return (

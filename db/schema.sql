@@ -5,6 +5,17 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TYPE log_level AS ENUM ('success', 'error', 'info', 'warning');
 CREATE TYPE order_side AS ENUM ('buy', 'sell');
 CREATE TYPE order_status AS ENUM ('filled', 'cancelled', 'pending');
+CREATE TYPE trade_mode AS ENUM ('paper', 'live');
+
+CREATE TABLE IF NOT EXISTS users (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  email VARCHAR(255) UNIQUE NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
 CREATE TABLE IF NOT EXISTS strategy_configs (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -58,6 +69,10 @@ CREATE TABLE IF NOT EXISTS app_settings (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   api_key_masked VARCHAR(255),
   api_secret_masked VARCHAR(255),
+  api_key VARCHAR(255),
+  api_secret VARCHAR(255),
+  exchange_name VARCHAR(50) NOT NULL DEFAULT 'binance',
+  trade_mode trade_mode NOT NULL DEFAULT 'paper',
   paper_trading BOOLEAN NOT NULL DEFAULT TRUE,
   dark_mode BOOLEAN NOT NULL DEFAULT TRUE,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -91,8 +106,8 @@ INSERT INTO bot_status (status, daily_pnl, current_asset)
 SELECT 'Running', 150.20, 'PETR4'
 WHERE NOT EXISTS (SELECT 1 FROM bot_status);
 
-INSERT INTO app_settings (api_key_masked, api_secret_masked, paper_trading, dark_mode)
-SELECT '********************', '********************', TRUE, TRUE
+INSERT INTO app_settings (api_key_masked, api_secret_masked, exchange_name, trade_mode, paper_trading, dark_mode)
+SELECT '********************', '********************', 'binance', 'paper', TRUE, TRUE
 WHERE NOT EXISTS (SELECT 1 FROM app_settings);
 
 INSERT INTO paper_account (balance, open_position_asset, open_position_qty)

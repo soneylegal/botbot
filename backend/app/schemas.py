@@ -1,7 +1,38 @@
 from datetime import datetime
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+class TradeModeEnum(str, Enum):
+    paper = "paper"
+    live = "live"
+
+
+class AuthRegisterIn(BaseModel):
+    email: str
+    password: str = Field(..., min_length=6)
+
+
+class AuthLoginIn(BaseModel):
+    email: str
+    password: str
+
+
+class TokenOut(BaseModel):
+    access_token: str
+    refresh_token: str | None = None
+    token_type: str = "bearer"
+
+
+class RefreshTokenIn(BaseModel):
+    refresh_token: str
+
+
+class UserOut(BaseModel):
+    id: str
+    email: str
 
 
 class TickPoint(BaseModel):
@@ -41,6 +72,10 @@ class BacktestResponse(BaseModel):
     equity_curve: list[float]
 
 
+class BacktestRunIn(BaseModel):
+    period_label: str = "6 Months"
+
+
 class LogIn(BaseModel):
     level: str
     message: str
@@ -58,6 +93,8 @@ class LogOut(BaseModel):
 class SettingsIn(BaseModel):
     api_key: str | None = None
     api_secret: str | None = None
+    exchange_name: str = "binance"
+    trade_mode: TradeModeEnum = TradeModeEnum.paper
     paper_trading: bool
     dark_mode: bool
 
@@ -65,6 +102,8 @@ class SettingsIn(BaseModel):
 class SettingsOut(BaseModel):
     api_key_masked: str | None = None
     api_secret_masked: str | None = None
+    exchange_name: str = "binance"
+    trade_mode: TradeModeEnum = TradeModeEnum.paper
     paper_trading: bool
     dark_mode: bool
     updated_at: datetime

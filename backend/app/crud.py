@@ -1,11 +1,15 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import random
 
+import pandas as pd
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app import models, schemas
+from app.security import hash_password, verify_password
+from app.services_backtest import run_ma_backtest
+from app.services_exchange import ExchangeService
 
 
 def mask_secret(value: str | None) -> str | None:
@@ -14,6 +18,39 @@ def mask_secret(value: str | None) -> str | None:
     if len(value) <= 4:
         return "*" * len(value)
     return "*" * (len(value) - 4) + value[-4:]
+
+
+# ---------- Auth ----------
+def get_user_by_email(db: Session, email: str) -> models.User | None:
+    return db.query(models.User).filter(models.User.email == email.lower()).first()
+
+
+def create_user(db: Session, email: str, password: str) -> models.User:
+    user = models.User(email=email.lower(), password_hash=hash_password(password), is_active=True)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def authenticate_user(db: Session, email: str, password: str) -> models.User | None:
+    user = get_user_by_email(db, email)
+    if not user:
+        return None
+    if not verify_password(password, user.password_hash):
+        return None
+    return user
+
+
+def ensure_seed_admin(db: Session):
+    user = get_user_by_email(db, "admin@botbot.local")
+    if not user:
+        create_user(db, "admin@botbot.local", "admin123")
+        return
+
+    if not user.password_hash.startswith("pbkdf2_sha256$"):
+        user.password_hash = hash_password("admin123")
+        db.commit()
 
 
 def get_or_create_status(db: Session) -> models.BotStatus:
@@ -42,7 +79,7 @@ def upsert_strategy(db: Session, payload: schemas.StrategyConfigIn) -> models.St
     strategy.timeframe = payload.timeframe
     strategy.ma_short_period = payload.ma_short_period
     strategy.ma_long_period = payload.ma_long_period
-    strategy.updated_at = datetime.utcnow()
+    strategy.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(strategy)
     return strategy
@@ -54,19 +91,19 @@ def get_dashboard_data(db: Session) -> schemas.DashboardResponse:
         db.query(models.MarketTick)
         .filter(models.MarketTick.asset == (status.current_asset or "PETR4"))
         .order_by(desc(models.MarketTick.tick_at))
-        .limit(30)
+        .limit(60)
         .all()
     )
 
     if not ticks:
         base = 25.0
-        now = datetime.utcnow()
-        for i in range(30):
+        now = datetime.now(timezone.utc)
+        for i in range(60):
             tick = models.MarketTick(
                 asset=status.current_asset or "PETR4",
-                price=base + random.uniform(-0.4, 0.4) + (i * 0.05),
+                price=base + random.uniform(-0.4, 0.4) + (i * 0.03),
                 volume=1000 + random.uniform(0, 300),
-                tick_at=now - timedelta(minutes=30 - i),
+                tick_at=now - timedelta(minutes=60 - i),
             )
             db.add(tick)
         db.commit()
@@ -74,7 +111,7 @@ def get_dashboard_data(db: Session) -> schemas.DashboardResponse:
             db.query(models.MarketTick)
             .filter(models.MarketTick.asset == (status.current_asset or "PETR4"))
             .order_by(desc(models.MarketTick.tick_at))
-            .limit(30)
+            .limit(60)
             .all()
         )
 
@@ -115,12 +152,73 @@ def get_latest_backtest(db: Session) -> schemas.BacktestResponse:
     )
 
 
+def run_backtest(db: Session, period_label: str = "6 Months") -> schemas.BacktestResponse:
+    strategy = get_or_create_strategy(db)
+    ticks = (
+        db.query(models.MarketTick)
+        .filter(models.MarketTick.asset == strategy.asset)
+        .order_by(models.MarketTick.tick_at.asc())
+        .limit(5000)
+        .all()
+    )
+
+    if len(ticks) < max(strategy.ma_long_period + 5, 40):
+        now = datetime.now(timezone.utc)
+        base = 25.0
+        for i in range(400):
+            db.add(
+                models.MarketTick(
+                    asset=strategy.asset,
+                    price=base + (i * 0.02) + random.uniform(-0.7, 0.6),
+                    volume=random.uniform(800, 5200),
+                    tick_at=now - timedelta(minutes=400 - i),
+                )
+            )
+        db.commit()
+        ticks = (
+            db.query(models.MarketTick)
+            .filter(models.MarketTick.asset == strategy.asset)
+            .order_by(models.MarketTick.tick_at.asc())
+            .limit(5000)
+            .all()
+        )
+
+    prices = [float(t.price) for t in ticks]
+    times = [pd.Timestamp(t.tick_at) for t in ticks]
+    result = run_ma_backtest(prices, times, strategy.ma_short_period, strategy.ma_long_period)
+
+    row = models.BacktestResult(
+        strategy_config_id=strategy.id,
+        period_label=period_label,
+        total_return=result["total_return"],
+        win_rate=result["win_rate"],
+        max_drawdown=result["max_drawdown"],
+        sharpe_ratio=result["sharpe_ratio"],
+        equity_curve=result["equity_curve"],
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    return schemas.BacktestResponse(
+        period_label=row.period_label,
+        metrics=schemas.BacktestMetrics(
+            total_return=float(row.total_return),
+            win_rate=float(row.win_rate),
+            max_drawdown=float(row.max_drawdown),
+            sharpe_ratio=float(row.sharpe_ratio),
+        ),
+        equity_curve=[float(v) for v in row.equity_curve],
+    )
+
+
 def list_logs(db: Session, limit: int = 100) -> list[models.LogEntry]:
     return db.query(models.LogEntry).order_by(desc(models.LogEntry.created_at)).limit(limit).all()
 
 
 def create_log(db: Session, payload: schemas.LogIn) -> models.LogEntry:
-    item = models.LogEntry(level=payload.level, message=payload.message, details=payload.details)
+    level = models.LogLevel(payload.level)
+    item = models.LogEntry(level=level, message=payload.message, details=payload.details)
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -135,6 +233,8 @@ def get_or_create_settings(db: Session) -> models.AppSettings:
             api_secret_masked="********************",
             paper_trading=True,
             dark_mode=True,
+            exchange_name="binance",
+            trade_mode=models.TradeMode.paper,
         )
         db.add(settings)
         db.commit()
@@ -146,11 +246,15 @@ def update_settings(db: Session, payload: schemas.SettingsIn) -> models.AppSetti
     settings = get_or_create_settings(db)
     settings.paper_trading = payload.paper_trading
     settings.dark_mode = payload.dark_mode
+    settings.exchange_name = payload.exchange_name
+    settings.trade_mode = models.TradeMode(payload.trade_mode.value)
     if payload.api_key:
+        settings.api_key = payload.api_key
         settings.api_key_masked = mask_secret(payload.api_key)
     if payload.api_secret:
+        settings.api_secret = payload.api_secret
         settings.api_secret_masked = mask_secret(payload.api_secret)
-    settings.updated_at = datetime.utcnow()
+    settings.updated_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(settings)
     return settings
@@ -193,6 +297,28 @@ def create_paper_order(db: Session, side: models.OrderSide, payload: schemas.Pap
     return order
 
 
+def create_live_or_paper_order(db: Session, side: models.OrderSide, payload: schemas.PaperOrderIn) -> models.PaperOrder:
+    settings = get_or_create_settings(db)
+    if settings.trade_mode == models.TradeMode.live:
+        symbol = f"{payload.asset}/USDT"
+        service = ExchangeService(settings)
+        service.create_live_order(symbol=symbol, side=side.value, amount=payload.quantity, price=payload.price)
+        order = models.PaperOrder(
+            side=side,
+            asset=payload.asset,
+            price=payload.price,
+            quantity=payload.quantity,
+            status=models.OrderStatus.filled,
+            simulated=False,
+        )
+        db.add(order)
+        db.commit()
+        db.refresh(order)
+        return order
+
+    return create_paper_order(db, side, payload)
+
+
 def get_paper_state(db: Session) -> schemas.PaperStateResponse:
     account = get_or_create_paper_account(db)
     orders = db.query(models.PaperOrder).order_by(desc(models.PaperOrder.created_at)).limit(10).all()
@@ -214,3 +340,18 @@ def get_paper_state(db: Session) -> schemas.PaperStateResponse:
         open_position_qty=float(account.open_position_qty),
         recent_orders=mapped_orders,
     )
+
+
+def test_exchange_connection(db: Session) -> tuple[bool, str]:
+    settings = get_or_create_settings(db)
+    if settings.trade_mode == models.TradeMode.paper:
+        return True, "Paper mode ativo. Conexão externa não requerida."
+
+    if not settings.api_key or not settings.api_secret:
+        return False, "Credenciais ausentes para modo live."
+
+    service = ExchangeService(settings)
+    price = service.fetch_last_price("BTC/USDT")
+    if not price:
+        return False, "Falha ao conectar na exchange live."
+    return True, "Conexão live validada com sucesso."
