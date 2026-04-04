@@ -78,7 +78,15 @@ No diretório mobile:
 2. Rode o app:
    - `npm run start`
 
-Defina a URL da API em [mobile/src/services/api.ts](mobile/src/services/api.ts).
+Defina a URL da API com variável de ambiente:
+
+- `EXPO_PUBLIC_API_BASE_URL=http://localhost:8000`
+
+Exemplo (web):
+
+- `EXPO_PUBLIC_API_BASE_URL=http://localhost:8000 npm run start`
+
+No app, a tela inicial agora é de autenticação (não carrega dashboard sem JWT).
 
 > Em device físico, troque `localhost` pelo IP da máquina.
 

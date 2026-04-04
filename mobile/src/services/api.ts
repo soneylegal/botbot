@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
 
 export const api = axios.create({
   // Ajuste para IP local quando testar no device físico.
@@ -12,26 +12,34 @@ let accessToken = '';
 let refreshToken = '';
 let isRefreshing = false;
 
-async function ensureAuth() {
-  if (accessToken) return;
-  const email = 'admin@botbot.local';
-  const password = 'admin123';
-
-  try {
-    const { data } = await axios.post<{ access_token: string; refresh_token?: string }>(`${API_BASE_URL}/auth/login`, { email, password });
-    accessToken = data.access_token;
-    refreshToken = data.refresh_token ?? '';
-  } catch {
-    await axios.post(`${API_BASE_URL}/auth/register`, { email, password });
-    const { data } = await axios.post<{ access_token: string; refresh_token?: string }>(`${API_BASE_URL}/auth/login`, { email, password });
-    accessToken = data.access_token;
-    refreshToken = data.refresh_token ?? '';
-  }
+export function setAuthTokens(tokens: { access_token: string; refresh_token?: string }) {
+  accessToken = tokens.access_token;
+  refreshToken = tokens.refresh_token ?? '';
 }
 
-api.interceptors.request.use(async (config) => {
-  await ensureAuth();
-  config.headers.Authorization = `Bearer ${accessToken}`;
+export function clearAuthTokens() {
+  accessToken = '';
+  refreshToken = '';
+}
+
+export function hasAuthToken() {
+  return Boolean(accessToken);
+}
+
+export async function loginWithCredentials(email: string, password: string) {
+  const { data } = await axios.post<{ access_token: string; refresh_token?: string }>(`${API_BASE_URL}/auth/login`, { email, password });
+  setAuthTokens(data);
+  return data;
+}
+
+export async function registerUser(email: string, password: string) {
+  await axios.post(`${API_BASE_URL}/auth/register`, { email, password });
+}
+
+api.interceptors.request.use((config) => {
+  if (accessToken) {
+    config.headers.Authorization = `Bearer ${accessToken}`;
+  }
   return config;
 });
 
@@ -44,7 +52,7 @@ api.interceptors.response.use(
     }
 
     if (!refreshToken || isRefreshing) {
-      accessToken = '';
+      clearAuthTokens();
       throw error;
     }
 
@@ -53,11 +61,13 @@ api.interceptors.response.use(
       const { data } = await axios.post<{ access_token: string; refresh_token?: string }>(`${API_BASE_URL}/auth/refresh`, {
         refresh_token: refreshToken,
       });
-      accessToken = data.access_token;
-      refreshToken = data.refresh_token ?? refreshToken;
+      setAuthTokens(data);
       original._retry = true;
       original.headers.Authorization = `Bearer ${accessToken}`;
       return api(original);
+    } catch (refreshError) {
+      clearAuthTokens();
+      throw refreshError;
     } finally {
       isRefreshing = false;
     }
