@@ -67,7 +67,7 @@ export function StrategyScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.helpText}>
-        Defina aqui o Ativo e o Tempo Gráfico que o Bot deve monitorar no Dashboard e usar no Backtest.
+        Defina a moeda e a janela de tempo que o Bot usará para operar e exibir no Dashboard.
       </Text>
 
       <Text style={styles.label}>Ativo</Text>

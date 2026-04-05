@@ -229,7 +229,7 @@ export async function fetchBacktest() {
   return data;
 }
 
-export async function runBacktest(period_label = '6 Months', asset?: string) {
+export async function runBacktest(period_label: '1mo' | '6mo' | '1y' = '6mo', asset?: string) {
   const { data } = await api.post<BacktestData>('/backtest/run', { period_label, asset });
   return data;
 }

@@ -145,10 +145,13 @@ def _period_days(period_label: str) -> int:
     mapping = {
         "1 Month": 30,
         "1M": 30,
+        "1mo": 30,
         "6 Months": 180,
         "6M": 180,
+        "6mo": 180,
         "1 Year": 365,
         "1Y": 365,
+        "1y": 365,
     }
     return mapping.get(period_label, 180)
 
@@ -622,7 +625,6 @@ def create_live_or_paper_order(
         if fallback_price > 0:
             payload = schemas.PaperOrderIn(asset=payload.asset, price=float(fallback_price), quantity=payload.quantity)
         else:
-            # último recurso para não travar a interface; usa último fechamento local
             last_tick = (
                 db.query(models.MarketTick)
                 .filter(models.MarketTick.asset == payload.asset.upper())
@@ -631,6 +633,9 @@ def create_live_or_paper_order(
             )
             if last_tick and float(last_tick.price or 0) > 0:
                 payload = schemas.PaperOrderIn(asset=payload.asset, price=float(last_tick.price), quantity=payload.quantity)
+
+    if float(payload.price or 0) <= 0:
+        raise ValueError("Preço indisponível para este ativo no momento.")
 
     settings = get_or_create_settings(db)
     if settings.trade_mode == models.TradeMode.live:
@@ -698,7 +703,7 @@ def _resolve_spot_price(db: Session, asset: str) -> tuple[float, str]:
             f"Buscando preço real para {asset}...",
             {"asset": asset},
         )
-        price = service.fetch_spot_price(asset, cache_ttl_seconds=60)
+        price = service.fetch_spot_price(asset, cache_ttl_seconds=60, db=db)
         safe_price = _safe_number(price, 0.0)
         if safe_price > 0:
             if not service._is_crypto_asset(asset) and safe_price > 1000:

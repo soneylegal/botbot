@@ -20,6 +20,7 @@ except Exception:
 
 from app import models
 from app.asset_universe import CRYPTO_TOP10
+from sqlalchemy.orm import Session
 
 YF_SESSION = None
 if requests is not None:
@@ -201,19 +202,47 @@ class ExchangeService:
 
             raise ValueError(f"Sem dados históricos suficientes para {asset}")
 
-    def fetch_spot_price(self, asset: str, cache_ttl_seconds: int = 60) -> float | None:
+    def fetch_spot_price(self, asset: str, cache_ttl_seconds: int = 60, db: Session | None = None) -> float | None:
         asset = asset.upper()
         if yf is None:
+            if db is not None:
+                last = (
+                    db.query(models.MarketTick)
+                    .filter(models.MarketTick.asset == asset)
+                    .order_by(models.MarketTick.tick_at.desc())
+                    .first()
+                )
+                if last and float(last.price) > 0:
+                    return float(last.price)
             return None
 
         symbol = self._to_yfinance_ticker(asset)
         ticker = yf.Ticker(symbol, session=YF_SESSION)
 
         try:
-            price = float(ticker.fast_info['lastPrice'])
+            price = float(ticker.fast_info["lastPrice"])
             if math.isfinite(price) and price > 0:
                 return price
         except Exception:
             pass
+
+        try:
+            hist = ticker.history(period="1d", interval="1m", auto_adjust=False)
+            if hist is not None and not hist.empty:
+                close = float(hist["Close"].dropna().iloc[-1])
+                if math.isfinite(close) and close > 0:
+                    return close
+        except Exception:
+            pass
+
+        if db is not None:
+            last = (
+                db.query(models.MarketTick)
+                .filter(models.MarketTick.asset == asset)
+                .order_by(models.MarketTick.tick_at.desc())
+                .first()
+            )
+            if last and float(last.price) > 0:
+                return float(last.price)
 
         return None

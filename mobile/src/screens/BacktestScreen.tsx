@@ -8,6 +8,8 @@ import { useAppTheme } from '../theme';
 
 const screenWidth = Dimensions.get('window').width;
 
+type PeriodCode = '1mo' | '6mo' | '1y';
+
 function sampleSeries(points: number[], maxPoints = 100): number[] {
   if (points.length <= maxPoints) return points;
   const step = (points.length - 1) / (maxPoints - 1);
@@ -35,12 +37,11 @@ function buildSparseLabels(points: string[], targetLen: number): string[] {
 
   const sampled = sampleLabels(points, targetLen);
   const last = targetLen - 1;
-  const marks = new Set([0, Math.round(last * 0.25), Math.round(last * 0.5), Math.round(last * 0.75), last]);
+  const marks = Array.from(new Set([0, Math.round(last * 0.25), Math.round(last * 0.5), Math.round(last * 0.75), last]));
 
-  marks.forEach((idx) => {
+  for (const idx of marks) {
     labels[idx] = formatDateLabel(sampled[idx]);
-  });
-
+  }
   return labels;
 }
 
@@ -68,11 +69,17 @@ function formatDateLabel(value?: string) {
   return `${dd}/${mm}`;
 }
 
+function hasVolatility(values: number[]) {
+  if (values.length < 2) return false;
+  const first = values[0];
+  return values.some((v) => v !== first);
+}
+
 export function BacktestScreen() {
   const { colors, darkMode } = useAppTheme();
   const [data, setData] = useState<BacktestData | null>(null);
   const [asset, setAsset] = useState('PETR4');
-  const [period, setPeriod] = useState<'1 Month' | '6 Months' | '1 Year'>('6 Months');
+  const [period, setPeriod] = useState<PeriodCode>('6mo');
   const [running, setRunning] = useState(false);
   const [assets, setAssets] = useState<string[]>(['PETR4', 'BTC', 'ETH']);
 
@@ -110,6 +117,7 @@ export function BacktestScreen() {
 
   const sampledCurve = useMemo(() => sanitizeSeries(sampleSeries(data?.equity_curve ?? [])), [data?.equity_curve]);
   const sampledDates = useMemo(() => buildSparseLabels(data?.equity_dates ?? [], sampledCurve.length), [data?.equity_dates, sampledCurve.length]);
+  const canRenderChart = hasVolatility(sampledCurve);
   const isCrypto = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'TRX', 'AVAX', 'DOT'].includes(asset.toUpperCase());
   const currency = isCrypto ? 'USD' : 'BRL';
   const yAxisLabel = currency === 'USD' ? 'US$ ' : 'R$ ';
@@ -137,16 +145,16 @@ export function BacktestScreen() {
         <Text style={styles.filterLabel}>Período</Text>
         <View style={styles.pickerWrap}>
           <Picker selectedValue={period} onValueChange={setPeriod} dropdownIconColor={colors.text} style={styles.picker}>
-            <Picker.Item label="1 mês" value="1 Month" />
-            <Picker.Item label="6 meses" value="6 Months" />
-            <Picker.Item label="1 ano" value="1 Year" />
+            <Picker.Item label="1 mês" value="1mo" />
+            <Picker.Item label="6 meses" value="6mo" />
+            <Picker.Item label="1 ano" value="1y" />
           </Picker>
         </View>
       </View>
       <Pressable style={[styles.runBtn, running && styles.runBtnDisabled]} onPress={() => void onRunBacktest()} disabled={running}>
         <Text style={styles.runBtnText}>{running ? 'Rodando backtest...' : 'Rodar Backtest'}</Text>
       </Pressable>
-      {sampledCurve.length > 0 ? (
+      {canRenderChart ? (
         <LineChart
           data={{ labels: sampledDates, datasets: [{ data: sampledCurve }] }}
           width={screenWidth - 24}
@@ -165,9 +173,9 @@ export function BacktestScreen() {
           style={styles.chart}
         />
       ) : (
-        <View style={styles.chartUnavailable}>
-          <Text style={styles.emptyChartText}>Gráfico indisponível para este ativo no momento</Text>
-        </View>
+        <Text style={{ textAlign: 'center', marginVertical: 20, color: colors.muted }}>
+          Aguardando volatilidade ou dados do mercado...
+        </Text>
       )}
 
       <View style={styles.metricsRow}>

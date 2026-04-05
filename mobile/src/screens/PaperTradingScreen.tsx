@@ -153,6 +153,8 @@ export function PaperTradingScreen() {
     }
   };
 
+  const formatSignedMoney = (value: number) => `${value > 0 ? '+' : ''}${moneyFmt.format(value)}`;
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.badge}>PAPER TRADING MODE</Text>
@@ -207,7 +209,7 @@ export function PaperTradingScreen() {
                 : styles.line
             }
           >
-            {moneyFmt.format(Number(state?.floating_pnl ?? 0))}
+            {formatSignedMoney(Number(state?.floating_pnl ?? 0))}
           </Text>
         </Text>
         <Text style={styles.line}>
@@ -232,6 +234,9 @@ export function PaperTradingScreen() {
       >
         <Text style={styles.resetBtnText}>Resetar Carteira</Text>
       </Pressable>
+      <Text style={styles.helpText}>
+        O modo Paper permite testar compras manuais usando saldo fictício, independente da ação do Bot.
+      </Text>
 
       <Text style={styles.subtitle}>Ordens Simuladas Recentes</Text>
       {(state?.recent_orders ?? []).map((item) => (

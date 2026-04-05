@@ -24,6 +24,12 @@ function normalizeChart(points: Array<{ t: string; p: number }>) {
   return normalized;
 }
 
+function hasVolatility(values: number[]) {
+  if (values.length < 2) return false;
+  const first = values[0];
+  return values.some((v) => v !== first);
+}
+
 export function DashboardScreen() {
   const { colors, darkMode } = useAppTheme();
   const [data, setData] = useState<DashboardData | null>(null);
@@ -108,12 +114,8 @@ export function DashboardScreen() {
 
   const normalized = normalizeChart(data?.chart ?? []);
   const prices = normalized.map((p) => p.p);
-  const hasChart = prices.length > 0;
-  const minPrice = hasChart ? Math.min(...prices) : 0;
-  const maxPrice = hasChart ? Math.max(...prices) : 0;
-  const hasVariation = hasChart && prices.length > 1 && maxPrice !== minPrice;
-  const padLow = hasChart ? minPrice * 0.99 : 0;
-  const padHigh = hasChart ? maxPrice * 1.01 : 0;
+  const canRenderChart = hasVolatility(prices);
+
   const chartBackground = darkMode ? '#0b0f1a' : '#ffffff';
   const asset = (data?.asset ?? 'PETR4').toUpperCase();
   const currency = CRYPTO_ASSETS.has(asset) ? 'USD' : 'BRL';
@@ -121,6 +123,7 @@ export function DashboardScreen() {
     () => new Intl.NumberFormat('pt-BR', { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }),
     [currency]
   );
+  const formatSignedMoney = (value: number) => `${value > 0 ? '+' : ''}${moneyFmt.format(value)}`;
   const yAxisLabel = currency === 'USD' ? 'US$ ' : 'R$ ';
 
   if (loading && !data) {
@@ -137,8 +140,9 @@ export function DashboardScreen() {
       refreshControl={<RefreshControl refreshing={loading} onRefresh={load} tintColor={colors.primary} />}
     >
       <Text style={styles.title}>Ativo: {data?.asset ?? '-'}</Text>
+      <Text style={styles.subtitle}>O Bot está monitorando este gráfico para cruzamento de médias.</Text>
 
-      {hasVariation ? (
+      {canRenderChart ? (
         <LineChart
           data={{
             labels: prices.map(() => ''),
@@ -161,9 +165,9 @@ export function DashboardScreen() {
           style={styles.chart}
         />
       ) : (
-        <View style={styles.chartUnavailable}>
-          <Text style={styles.subtle}>Gráfico indisponível para este ativo no momento</Text>
-        </View>
+        <Text style={{ textAlign: 'center', marginVertical: 20, color: colors.muted }}>
+          Aguardando volatilidade ou dados do mercado...
+        </Text>
       )}
 
       <View style={styles.card}>
@@ -171,8 +175,16 @@ export function DashboardScreen() {
         <Text style={styles.subtle}>Fonte de preço: {data?.price_status ?? 'Preço em Cache'}</Text>
         <Text style={styles.row}>
           P/L Diário:{' '}
-          <Text style={Number(data?.daily_pnl) >= 0 ? styles.success : styles.error}>
-            {moneyFmt.format(Number(data?.daily_pnl ?? 0))}
+          <Text
+            style={
+              Number(data?.daily_pnl) > 0
+                ? styles.success
+                : Number(data?.daily_pnl) < 0
+                ? styles.error
+                : styles.row
+            }
+          >
+            {formatSignedMoney(Number(data?.daily_pnl ?? 0))}
           </Text>
         </Text>
       </View>
@@ -185,6 +197,7 @@ const createStyles = (colors: ReturnType<typeof useAppTheme>['colors']) =>
     container: { flex: 1, backgroundColor: colors.bg, padding: 12 },
     center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
     title: { color: colors.text, fontSize: 16, marginBottom: 10 },
+    subtitle: { color: colors.muted, fontSize: 12, marginBottom: 10 },
     chart: { borderRadius: 12 },
     chartUnavailable: {
       backgroundColor: colors.card,

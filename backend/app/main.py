@@ -52,7 +52,7 @@ async def market_ws(websocket: WebSocket, asset: str):
                 price = None
                 if settings:
                     service = ExchangeService(settings)
-                    price = service.fetch_spot_price(asset)
+                    price = service.fetch_spot_price(asset, db=db)
 
                 if not price or float(price) <= 0:
                     last_tick = (
@@ -61,7 +61,11 @@ async def market_ws(websocket: WebSocket, asset: str):
                         .order_by(MarketTick.tick_at.desc())
                         .first()
                     )
-                    price = float(last_tick.price) if last_tick and float(last_tick.price) > 0 else 1.0
+                    price = float(last_tick.price) if last_tick and float(last_tick.price) > 0 else 0.0
+
+                if not price or float(price) <= 0:
+                    await websocket.send_json({"asset": asset, "error": "PRICE_UNAVAILABLE"})
+                    continue
 
                 db.add(MarketTick(asset=asset, price=float(price), volume=0, tick_at=datetime.now(timezone.utc)))
                 db.commit()
