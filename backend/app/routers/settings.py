@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.crud import get_or_create_settings, test_exchange_connection, update_settings
+from app.core2 import get_or_create_settings, test_exchange_connection, update_settings
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import User

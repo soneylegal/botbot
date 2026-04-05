@@ -18,6 +18,350 @@ def mask_secret(value: str | None) -> str | None:
         return "*" * len(value)
     return "*" * (len(value) - 4) + value[-4:]
 
+    from __future__ import annotations
+
+    from datetime import datetime, timedelta, timezone
+    from decimal import Decimal
+    import math
+    import uuid
+
+    from sqlalchemy import desc
+    from sqlalchemy.orm import Session
+
+    from app import models, schemas
+    from app.security import hash_password, verify_password
+    from app.services_backtest import run_ma_backtest
+    from app.services_exchange import ExchangeService
+
+
+    def _safe_float(value: float | int | Decimal | None, default: float = 0.0) -> float:
+        try:
+            v = float(value)
+            return v if math.isfinite(v) else default
+        except Exception:
+            return default
+
+
+    def _round2(value: float | int | Decimal | None) -> float:
+        return round(_safe_float(value), 2)
+
+
+    def _utc_now() -> datetime:
+        return datetime.now(timezone.utc)
+
+
+    def _to_decimal(value: float | int | str | Decimal) -> Decimal:
+        return Decimal(str(value))
+
+
+    def get_or_create_status(db: Session) -> models.BotStatus:
+        row = db.query(models.BotStatus).first()
+        if row:
+            return row
+
+        row = models.BotStatus(status="Running", daily_pnl=Decimal("0.00"), current_asset="PETR4")
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row
+
+
+    def get_or_create_strategy(db: Session) -> models.StrategyConfig:
+        row = db.query(models.StrategyConfig).order_by(desc(models.StrategyConfig.updated_at)).first()
+        if row:
+            return row
+
+        row = models.StrategyConfig(asset="PETR4", timeframe="5M", ma_short_period=9, ma_long_period=21)
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row
+
+
+    def get_or_create_user_balance(db: Session, user_id: uuid.UUID) -> models.UserBalance:
+        row = db.query(models.UserBalance).filter(models.UserBalance.user_id == user_id).first()
+        if row:
+            return row
+
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+        initial = _safe_float(user.balance if user else 10000, 10000)
+        row = models.UserBalance(user_id=user_id, balance=_to_decimal(initial))
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row
+
+
+    def get_user_open_position(db: Session, user_id: uuid.UUID, asset: str | None = None) -> models.UserPosition | None:
+        q = db.query(models.UserPosition).filter(models.UserPosition.user_id == user_id, models.UserPosition.quantity > 0)
+        if asset:
+            q = q.filter(models.UserPosition.asset == asset.upper())
+        return q.order_by(desc(models.UserPosition.updated_at)).first()
+
+
+    def create_user(db: Session, email: str, password: str) -> models.User:
+        user = models.User(email=email.lower(), password_hash=hash_password(password), is_active=True)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return user
+
+
+    def authenticate_user(db: Session, email: str, password: str) -> models.User | None:
+        user = get_user_by_email(db, email)
+        if not user:
+            return None
+        if not verify_password(password, user.password_hash):
+            return None
+        return user
+
+
+    def ensure_seed_admin(db: Session):
+        user = get_user_by_email(db, "admin@botbot.local")
+        if not user:
+            create_user(db, "admin@botbot.local", "admin123")
+            return
+        if not user.password_hash.startswith("pbkdf2_sha256$"):
+            user.password_hash = hash_password("admin123")
+            db.commit()
+
+
+    def _append_log(
+        db: Session,
+        level: models.LogLevel,
+        message: str,
+        details: dict | None = None,
+        user_id: uuid.UUID | None = None,
+    ):
+        db.add(models.LogEntry(level=level, message=message, details=details, user_id=user_id))
+
+
+    def list_recent_paper_orders(db: Session, user_id: uuid.UUID, limit: int = 25) -> list[schemas.PaperOrderOut]:
+        rows = (
+            db.query(models.PaperOrder)
+            .filter(models.PaperOrder.user_id == user_id)
+            .order_by(desc(models.PaperOrder.created_at))
+            .limit(max(1, min(limit, 100)))
+            .all()
+        )
+        from __future__ import annotations
+
+        from datetime import datetime, timedelta, timezone
+        from decimal import Decimal
+        import math
+        import uuid
+
+        from sqlalchemy import desc
+        from sqlalchemy.orm import Session
+
+        from app import models, schemas
+        from app.security import hash_password, verify_password
+        from app.services_backtest import run_ma_backtest
+        from app.services_exchange import ExchangeService
+
+
+        def _safe_float(value: float | int | Decimal | None, default: float = 0.0) -> float:
+            try:
+                v = float(value)
+                return v if math.isfinite(v) else default
+            except Exception:
+                return default
+
+
+        def _round2(value: float | int | Decimal | None) -> float:
+            return round(_safe_float(value), 2)
+
+
+        def _utc_now() -> datetime:
+            return datetime.now(timezone.utc)
+
+
+        def _to_decimal(value: float | int | str | Decimal) -> Decimal:
+            return Decimal(str(value))
+
+
+        def mask_secret(value: str | None) -> str | None:
+            if not value:
+                return None
+            if len(value) <= 4:
+                return "*" * len(value)
+            return "*" * (len(value) - 4) + value[-4:]
+
+
+        # ---------- Auth ----------
+        def get_user_by_email(db: Session, email: str) -> models.User | None:
+            return db.query(models.User).filter(models.User.email == email.lower()).first()
+
+
+        def create_user(db: Session, email: str, password: str) -> models.User:
+            user = models.User(email=email.lower(), password_hash=hash_password(password), is_active=True)
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+            return user
+
+
+        def authenticate_user(db: Session, email: str, password: str) -> models.User | None:
+            user = get_user_by_email(db, email)
+            if not user:
+                return None
+            if not verify_password(password, user.password_hash):
+                return None
+            return user
+
+
+        def ensure_seed_admin(db: Session):
+            user = get_user_by_email(db, "admin@botbot.local")
+            if not user:
+                create_user(db, "admin@botbot.local", "admin123")
+                return
+            if not user.password_hash.startswith("pbkdf2_sha256$"):
+                user.password_hash = hash_password("admin123")
+                db.commit()
+
+
+        def _append_log(
+            db: Session,
+            level: models.LogLevel,
+            message: str,
+            details: dict | None = None,
+            user_id: uuid.UUID | None = None,
+        ):
+            db.add(models.LogEntry(level=level, message=message, details=details, user_id=user_id))
+
+
+        def get_or_create_status(db: Session) -> models.BotStatus:
+            row = db.query(models.BotStatus).first()
+            if row:
+                return row
+
+            row = models.BotStatus(status="Running", daily_pnl=Decimal("0.00"), current_asset="PETR4")
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return row
+
+
+        def get_or_create_strategy(db: Session) -> models.StrategyConfig:
+            row = db.query(models.StrategyConfig).order_by(desc(models.StrategyConfig.updated_at)).first()
+            if row:
+                return row
+
+            row = models.StrategyConfig(asset="PETR4", timeframe="5M", ma_short_period=9, ma_long_period=21)
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return row
+
+
+        def get_or_create_user_balance(db: Session, user_id: uuid.UUID) -> models.UserBalance:
+            row = db.query(models.UserBalance).filter(models.UserBalance.user_id == user_id).first()
+            if row:
+                return row
+
+            user = db.query(models.User).filter(models.User.id == user_id).first()
+            initial = _safe_float(user.balance if user else 10000, 10000)
+            row = models.UserBalance(user_id=user_id, balance=_to_decimal(initial))
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            return row
+
+
+        def get_user_open_position(db: Session, user_id: uuid.UUID, asset: str | None = None) -> models.UserPosition | None:
+            q = db.query(models.UserPosition).filter(models.UserPosition.user_id == user_id, models.UserPosition.quantity > 0)
+            if asset:
+                q = q.filter(models.UserPosition.asset == asset.upper())
+            return q.order_by(desc(models.UserPosition.updated_at)).first()
+
+
+        def list_recent_paper_orders(db: Session, user_id: uuid.UUID, limit: int = 25) -> list[schemas.PaperOrderOut]:
+            rows = (
+                db.query(models.PaperOrder)
+                .filter(models.PaperOrder.user_id == user_id)
+                .order_by(desc(models.PaperOrder.created_at))
+                .limit(max(1, min(limit, 100)))
+                .all()
+            )
+        return [
+            schemas.PaperOrderOut(
+                id=r.id,
+                side=r.side.value,
+                asset=r.asset,
+                price=_safe_float(r.price),
+                quantity=_safe_float(r.quantity),
+                status=r.status.value,
+                created_at=r.created_at,
+            )
+            for r in rows
+        ]
+
+
+        def get_latest_backtest(db: Session, user_id: uuid.UUID | None = None) -> schemas.BacktestResponse:
+            row = db.query(models.BacktestResult).order_by(desc(models.BacktestResult.created_at)).first()
+            if not row:
+                return run_backtest(db, period_label="6 Months", user_id=user_id)
+
+            strategy = get_or_create_strategy(db)
+            settings = get_or_create_settings(db)
+            service = ExchangeService(settings)
+            raw = service.fetch_history(strategy.asset.upper(), timeframe=strategy.timeframe, limit=240, min_points=80)
+            candles = [c for c in (_to_candle_point(x) for x in raw) if c]
+
+            equity_curve = [float(v) for v in (row.equity_curve or [])]
+            now = _utc_now()
+            synthetic_dates = [(now - timedelta(days=len(equity_curve) - 1 - i)).date().isoformat() for i in range(len(equity_curve))]
+            sampled_curve, sampled_dates = _sample_aligned(equity_curve, synthetic_dates, max_points=120)
+
+            return schemas.BacktestResponse(
+                period_label=row.period_label,
+                metrics=schemas.BacktestMetrics(
+                    total_return=_round2(row.total_return),
+                    win_rate=_round2(row.win_rate),
+                    max_drawdown=_round2(row.max_drawdown),
+                    sharpe_ratio=_round2(row.sharpe_ratio),
+                    insight_summary="Último backtest salvo em banco para a estratégia ativa.",
+                ),
+                equity_curve=[_round2(v) for v in sampled_curve],
+                equity_dates=sampled_dates,
+                price_chart=candles,
+                ma_short_series=_build_ma_series(candles, strategy.ma_short_period),
+                ma_long_series=_build_ma_series(candles, strategy.ma_long_period),
+            )
+
+
+
+    def get_latest_backtest(db: Session, user_id: uuid.UUID | None = None) -> schemas.BacktestResponse:
+        row = db.query(models.BacktestResult).order_by(desc(models.BacktestResult.created_at)).first()
+        if not row:
+            return run_backtest(db, period_label="6 Months", user_id=user_id)
+
+        strategy = get_or_create_strategy(db)
+        settings = get_or_create_settings(db)
+        service = ExchangeService(settings)
+        raw = service.fetch_history(strategy.asset.upper(), timeframe=strategy.timeframe, limit=240, min_points=80)
+        candles = [c for c in (_to_candle_point(x) for x in raw) if c]
+
+        equity_curve = [float(v) for v in (row.equity_curve or [])]
+        now = _utc_now()
+        synthetic_dates = [(now - timedelta(days=len(equity_curve) - 1 - i)).date().isoformat() for i in range(len(equity_curve))]
+        sampled_curve, sampled_dates = _sample_aligned(equity_curve, synthetic_dates, max_points=120)
+
+        return schemas.BacktestResponse(
+            period_label=row.period_label,
+            metrics=schemas.BacktestMetrics(
+                total_return=_round2(row.total_return),
+                win_rate=_round2(row.win_rate),
+                max_drawdown=_round2(row.max_drawdown),
+                sharpe_ratio=_round2(row.sharpe_ratio),
+                insight_summary="Último backtest salvo em banco para a estratégia ativa.",
+            ),
+            equity_curve=[_round2(v) for v in sampled_curve],
+            equity_dates=sampled_dates,
+            price_chart=candles,
+            ma_short_series=_build_ma_series(candles, strategy.ma_short_period),
+            ma_long_series=_build_ma_series(candles, strategy.ma_long_period),
+        )
 
 # ---------- Auth ----------
 def get_user_by_email(db: Session, email: str) -> models.User | None:
@@ -156,6 +500,81 @@ def _period_days(period_label: str) -> int:
     return mapping.get(period_label, 180)
 
 
+def _history_params_for_days(days: int) -> tuple[str, int]:
+    if days <= 2:
+        return "5m", 200
+    if days <= 7:
+        return "15m", 240
+    if days <= 60:
+        return "1h", 360
+    return "1d", max(90, days)
+
+
+def _to_candle_row(raw: dict | None) -> schemas.CandlePoint | None:
+    if not raw:
+        return None
+    try:
+        time_raw = str(raw.get("time") or "")
+        close = _safe_number(raw.get("close"), 0.0)
+        if close <= 0:
+            return None
+        open_v = _safe_number(raw.get("open"), close)
+        high_v = _safe_number(raw.get("high"), max(open_v, close))
+        low_v = _safe_number(raw.get("low"), min(open_v, close))
+        high_v = max(high_v, open_v, close)
+        low_v = min(low_v, open_v, close)
+        return schemas.CandlePoint(
+            time=time_raw,
+            open=_round2(open_v),
+            high=_round2(high_v),
+            low=_round2(low_v),
+            close=_round2(close),
+        )
+    except Exception:
+        return None
+
+
+def _build_candles_from_ticks(ticks: list[models.MarketTick]) -> list[schemas.CandlePoint]:
+    candles: list[schemas.CandlePoint] = []
+    for t in reversed(ticks):
+        price = _safe_number(float(t.price), 0.0)
+        if price <= 0:
+            continue
+        iso = t.tick_at.isoformat()
+        candles.append(
+            schemas.CandlePoint(
+                time=iso,
+                open=_round2(price),
+                high=_round2(price),
+                low=_round2(price),
+                close=_round2(price),
+            )
+        )
+    return candles
+
+
+def _build_ma_series(candles: list[schemas.CandlePoint], period: int | None) -> list[schemas.IndicatorPoint]:
+    p = int(period or 0)
+    if p <= 0 or len(candles) < p:
+        return []
+
+    closes = [float(c.close) for c in candles]
+    out: list[schemas.IndicatorPoint] = []
+    rolling_sum = 0.0
+    for idx, value in enumerate(closes):
+        rolling_sum += value
+        if idx >= p:
+            rolling_sum -= closes[idx - p]
+        if idx >= p - 1:
+            out.append(
+                schemas.IndicatorPoint(
+                    time=candles[idx].time,
+                    value=_round2(rolling_sum / p),
+                )
+            )
+    return out
+
+
 def upsert_strategy(
     db: Session,
     payload: schemas.StrategyConfigIn,
@@ -172,6 +591,7 @@ def upsert_strategy(
     status.current_asset = payload.asset
     status.daily_pnl = Decimal("0.00")
     status.status = "Running"
+    ExchangeService.clear_spot_cache()
 
     _append_log(
         db,
@@ -191,7 +611,11 @@ def upsert_strategy(
     return strategy
 
 
-def get_dashboard_data(db: Session, user_id: uuid.UUID) -> schemas.DashboardResponse:
+def get_dashboard_data(
+    db: Session,
+    user_id: uuid.UUID,
+    include_chart: bool = True,
+) -> schemas.DashboardResponse:
     try:
         db.rollback()
     except Exception:
@@ -208,46 +632,111 @@ def get_dashboard_data(db: Session, user_id: uuid.UUID) -> schemas.DashboardResp
     asset_to_show = (strategy.asset or status.current_asset or "PETR4").upper()
     primary_position = next((p for p in open_positions if p.asset.upper() == asset_to_show), None)
 
+    latest_price_for_chart = 0.0
+    price_status = "Preço em Cache"
     try:
-        _resolve_spot_price(db, asset_to_show)
-        price_status = "Preço ao Vivo"
+        latest_price_for_chart, price_status = _resolve_spot_price(db, asset_to_show)
     except Exception:
-        price_status = "Preço em Cache"
+        latest_price_for_chart = 0.0
 
+    target_candles = max(100, int(strategy.ma_long_period or 0) * 4)
     ticks = (
         db.query(models.MarketTick)
         .filter(models.MarketTick.asset == asset_to_show)
         .order_by(desc(models.MarketTick.tick_at))
-        .limit(60)
+        .limit(max(target_candles, 120))
         .all()
     )
 
+    history_points: list[dict] = []
+    if include_chart and len(ticks) < target_candles:
+        try:
+            settings_dash = get_or_create_settings(db)
+            service_dash = ExchangeService(settings_dash)
+            history_points = service_dash.fetch_history(
+                asset_to_show,
+                timeframe=strategy.timeframe or "5m",
+                limit=target_candles,
+                min_points=target_candles,
+            )
+            if history_points:
+                persisted_ticks = []
+                for pt in history_points:
+                    raw_close = _safe_number(pt.get("close"), 0.0)
+                    if raw_close <= 0:
+                        continue
+                    raw_time = str(pt.get("time") or "")
+                    try:
+                        tick_ts = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+                    except Exception:
+                        tick_ts = datetime.now(timezone.utc)
+                    persisted_ticks.append(
+                        models.MarketTick(asset=asset_to_show, price=raw_close, tick_at=tick_ts)
+                    )
+                if persisted_ticks:
+                    db.add_all(persisted_ticks)
+                    db.commit()
+                    ticks = (
+                        db.query(models.MarketTick)
+                        .filter(models.MarketTick.asset == asset_to_show)
+                        .order_by(desc(models.MarketTick.tick_at))
+                        .limit(max(target_candles, 120))
+                        .all()
+                    )
+        except Exception:
+            db.rollback()
+
     daily_pnl = 0.0
     status_text = status.status
-    price_status = "Preço em Cache" if not ticks else price_status
+    price_status = "Preço em Cache" if (not ticks and latest_price_for_chart <= 0) else price_status
 
-    if primary_position and float(primary_position.quantity or 0) > 0:
-        pos_tick = (
-            db.query(models.MarketTick)
-            .filter(models.MarketTick.asset == asset_to_show)
-            .order_by(desc(models.MarketTick.tick_at))
-            .first()
-        )
-        price = _safe_number(float(pos_tick.price), 0.0) if pos_tick else 0.0
-        qty = float(primary_position.quantity or 0)
-        entry = float(primary_position.avg_entry_price or 0)
-        if price > 0 and qty > 0 and entry > 0:
-            daily_pnl = (price - entry) * qty
+    position_for_pnl = primary_position
+    if position_for_pnl and float(position_for_pnl.quantity or 0) > 0:
+        pnl_asset = asset_to_show
+        try:
+            spot_price, _ = _resolve_spot_price(db, pnl_asset, force_refresh=True)
+        except Exception:
+            pos_tick = (
+                db.query(models.MarketTick)
+                .filter(models.MarketTick.asset == pnl_asset)
+                .order_by(desc(models.MarketTick.tick_at))
+                .first()
+            )
+            spot_price = _safe_number(float(pos_tick.price), 0.0) if pos_tick else 0.0
+
+        qty = float(position_for_pnl.quantity or 0)
+        entry = float(position_for_pnl.avg_entry_price or 0)
+        if spot_price > 0 and qty > 0 and entry > 0:
+            daily_pnl = (spot_price - entry) * qty
+            status.daily_pnl = Decimal(str(_round2(daily_pnl)))
         status_text = "Running (posição aberta)" if status.status == "Running" else status.status
 
-    chart = [
-        schemas.TickPoint(
-            t=t.tick_at.isoformat(),
-            p=_round2(_safe_number(float(t.price), 0.0)),
-        )
-        for t in reversed(ticks)
-        if _safe_number(float(t.price), 0.0) > 0
-    ]
+    chart: list[schemas.CandlePoint] = []
+    if include_chart:
+        chart = _build_candles_from_ticks(ticks)
+
+    if include_chart and history_points:
+        parsed_history = [c for c in (_to_candle_row(pt) for pt in history_points) if c]
+        if len(parsed_history) >= max(len(chart), target_candles):
+            chart = parsed_history
+
+    if include_chart and len(chart) < target_candles and latest_price_for_chart > 0:
+        now = datetime.now(timezone.utc)
+        chart = [
+            schemas.CandlePoint(
+                time=(now - timedelta(minutes=(target_candles - 1 - i))).isoformat(),
+                open=_round2(latest_price_for_chart),
+                high=_round2(latest_price_for_chart),
+                low=_round2(latest_price_for_chart),
+                close=_round2(latest_price_for_chart),
+            )
+            for i in range(target_candles)
+        ]
+
+    ma_short_series = _build_ma_series(chart, strategy.ma_short_period) if include_chart else []
+    ma_long_series = _build_ma_series(chart, strategy.ma_long_period) if include_chart else []
+
+    db.commit()
 
     return schemas.DashboardResponse(
         status=status_text,
@@ -256,25 +745,45 @@ def get_dashboard_data(db: Session, user_id: uuid.UUID) -> schemas.DashboardResp
         price_status=price_status,
         position_qty=_round2((float(primary_position.quantity) if primary_position else 0.0)),
         avg_entry_price=_round2((float(primary_position.avg_entry_price) if primary_position else 0.0)),
+        timeframe=strategy.timeframe,
+        ma_short_period=strategy.ma_short_period,
+        ma_long_period=strategy.ma_long_period,
         chart=chart,
+        ma_short_series=ma_short_series,
+        ma_long_series=ma_long_series,
     )
 
 
-def get_latest_backtest(db: Session) -> schemas.BacktestResponse:
+def list_recent_paper_orders(
+    db: Session,
+    user_id: uuid.UUID,
+    limit: int = 25,
+) -> list[schemas.PaperOrderOut]:
+    rows = (
+        db.query(models.PaperOrder)
+        .filter(models.PaperOrder.user_id == user_id)
+        .order_by(desc(models.PaperOrder.created_at))
+        .limit(max(1, min(limit, 100)))
+        .all()
+    )
+    return [
+        schemas.PaperOrderOut(
+            id=row.id,
+            side=row.side.value,
+            asset=row.asset,
+            price=float(row.price),
+            quantity=float(row.quantity),
+            status=row.status.value,
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
+def get_latest_backtest(db: Session, user_id: uuid.UUID | None = None) -> schemas.BacktestResponse:
     item = db.query(models.BacktestResult).order_by(desc(models.BacktestResult.created_at)).first()
     if not item:
-        equity = [10000, 10150, 10300, 10280, 10600, 10800, 10700, 11050, 11550]
-        item = models.BacktestResult(
-            period_label="6 Months",
-            total_return=15.5,
-            win_rate=62.0,
-            max_drawdown=-8.2,
-            sharpe_ratio=1.4,
-            equity_curve=equity,
-        )
-        db.add(item)
-        db.commit()
-        db.refresh(item)
+        return run_backtest(db, period_label="6 Months", user_id=user_id)
 
     sampled_curve = [_round2(v) for v in _sample_points([float(v) for v in item.equity_curve], 100)]
     synthetic_dates = []
@@ -284,6 +793,23 @@ def get_latest_backtest(db: Session) -> schemas.BacktestResponse:
             (now - timedelta(days=(len(sampled_curve) - 1 - i))).date().isoformat() for i in range(len(sampled_curve))
         ]
 
+    strategy = get_or_create_strategy(db)
+    price_chart: list[schemas.CandlePoint] = []
+    try:
+        settings = get_or_create_settings(db)
+        service = ExchangeService(settings)
+        tf = strategy.timeframe or "5m"
+        raw_candles = service.fetch_history(strategy.asset.upper(), timeframe=tf, limit=180, min_points=30)
+        price_chart = [c for c in (_to_candle_row(row) for row in raw_candles) if c]
+    except Exception:
+        price_chart = []
+
+    if not price_chart:
+        raise ValueError("Sem histórico real para montar o gráfico do backtest.")
+
+    insight_summary = "Métricas calculadas sobre histórico real de fechamento com estratégia de cruzamento de médias móveis."
+    ma_short_series = _build_ma_series(price_chart, strategy.ma_short_period)
+    ma_long_series = _build_ma_series(price_chart, strategy.ma_long_period)
     return schemas.BacktestResponse(
         period_label=item.period_label,
         metrics=schemas.BacktestMetrics(
@@ -291,9 +817,13 @@ def get_latest_backtest(db: Session) -> schemas.BacktestResponse:
             win_rate=_round2(item.win_rate),
             max_drawdown=_round2(item.max_drawdown),
             sharpe_ratio=_round2(item.sharpe_ratio),
+            insight_summary=insight_summary,
         ),
         equity_curve=sampled_curve,
         equity_dates=synthetic_dates,
+        price_chart=price_chart,
+        ma_short_series=ma_short_series,
+        ma_long_series=ma_long_series,
     )
 
 
@@ -308,47 +838,78 @@ def run_backtest(
     days = _period_days(period_label)
     min_points = max(strategy.ma_long_period + 5, 40)
 
-    recent_ticks = (
-        db.query(models.MarketTick)
-        .filter(models.MarketTick.asset == selected_asset)
-        .order_by(models.MarketTick.tick_at.asc())
-        .limit(2000)
-        .all()
-    )
-    prices = [_safe_number(float(t.price), 0.0) for t in recent_ticks if _safe_number(float(t.price), 0.0) > 0]
-    times = [t.tick_at if t.tick_at.tzinfo else t.tick_at.replace(tzinfo=timezone.utc) for t in recent_ticks if _safe_number(float(t.price), 0.0) > 0]
+    settings = get_or_create_settings(db)
+    service = ExchangeService(settings)
+    history_tf, history_limit = _history_params_for_days(days)
+    if strategy.timeframe:
+        history_tf = strategy.timeframe
 
-    if len(prices) < min_points and prices:
-        base = prices[-1]
-        now_utc = datetime.now(timezone.utc)
-        generated_prices: list[float] = []
-        generated_times: list[datetime] = []
-        total = max(min_points + 20, 120)
-        for i in range(total):
-            drift = 1.0 + (0.003 * math.sin(i / 6.0))
-            generated_prices.append(max(0.1, base * drift))
-            generated_times.append(now_utc - timedelta(hours=(total - i)))
-        prices = generated_prices
-        times = generated_times
+    raw_candles = service.fetch_history(
+        selected_asset,
+        timeframe=history_tf,
+        limit=max(history_limit, min_points * 2),
+        min_points=min_points,
+    )
+
+    # Mapeamento explícito OHLCV -> série de fechamentos para o motor matemático.
+    prices: list[float] = []
+    times: list[datetime] = []
+    for candle in raw_candles:
+        try:
+            close = _safe_number(candle.get("close"), 0.0)
+            if close <= 0:
+                continue
+            raw_time = str(candle.get("time") or "")
+            ts = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            else:
+                ts = ts.astimezone(timezone.utc)
+            prices.append(close)
+            times.append(ts)
+        except Exception:
+            continue
+
+    price_chart = [c for c in (_to_candle_row(row) for row in raw_candles) if c]
 
     if len(prices) < min_points:
-        settings = get_or_create_settings(db)
-        exchange_service = ExchangeService(settings)
-        effective_days = max(days, 180) if exchange_service._is_crypto_asset(selected_asset) else days
-        prices, times = exchange_service.fetch_historical_closes(selected_asset, days=effective_days)
+        recent_ticks = (
+            db.query(models.MarketTick)
+            .filter(models.MarketTick.asset == selected_asset)
+            .order_by(models.MarketTick.tick_at.asc())
+            .limit(2000)
+            .all()
+        )
+        prices = [_safe_number(float(t.price), 0.0) for t in recent_ticks if _safe_number(float(t.price), 0.0) > 0]
+        times = [t.tick_at if t.tick_at.tzinfo else t.tick_at.replace(tzinfo=timezone.utc) for t in recent_ticks if _safe_number(float(t.price), 0.0) > 0]
+
+    if not price_chart and prices and times:
+        price_chart = [
+            schemas.CandlePoint(
+                time=(t if t.tzinfo else t.replace(tzinfo=timezone.utc)).isoformat(),
+                open=_round2(prices[max(i - 1, 0)]),
+                high=_round2(max(prices[max(i - 1, 0)], prices[i])),
+                low=_round2(min(prices[max(i - 1, 0)], prices[i])),
+                close=_round2(prices[i]),
+            )
+            for i, t in enumerate(times)
+        ]
 
     if len(prices) < min_points:
         raise ValueError("Dados insuficientes para este período")
 
-    initial_capital = 10000.0
+    # Obriga a capturar do saldo real do banco, sem inventar "10000.0"
+    initial_capital = 0.0
     if user_id:
-        user = db.query(models.User).filter(models.User.id == user_id).first()
-        if user and user.balance is not None and float(user.balance) > 0:
-            initial_capital = float(user.balance)
+        balance_row = db.query(models.UserBalance).filter(models.UserBalance.user_id == user_id).first()
+        if balance_row and float(balance_row.balance) > 0:
+            initial_capital = float(balance_row.balance)
+            
+    if initial_capital <= 0:
+        if settings.simulated_balance is not None and float(settings.simulated_balance) > 0:
+            initial_capital = float(settings.simulated_balance)
         else:
-            settings = get_or_create_settings(db)
-            if settings.simulated_balance is not None and float(settings.simulated_balance) > 0:
-                initial_capital = float(settings.simulated_balance)
+            raise ValueError("O usuário não possui saldo definido para iniciar o backtest.")
 
     result = run_ma_backtest(
         prices,
@@ -391,6 +952,13 @@ def run_backtest(
         100,
     )
 
+    insight_summary = "A estratégia apresenta um Retorno Total de {return_pct}% no período, com uma Taxa de Acerto (Win Rate) de {win_rate}%. O Rebaixamento Máximo (Max Drawdown) de {drawdown}% indica o maior risco enfrentado. O Índice Sharpe de {sharpe} avalia a relação risco-retorno.".format(
+        return_pct=_round2(row.total_return),
+        win_rate=_round2(row.win_rate),
+        drawdown=_round2(row.max_drawdown),
+        sharpe=_round2(row.sharpe_ratio)
+    )
+
     return schemas.BacktestResponse(
         period_label=row.period_label,
         metrics=schemas.BacktestMetrics(
@@ -398,9 +966,13 @@ def run_backtest(
             win_rate=_round2(row.win_rate),
             max_drawdown=_round2(row.max_drawdown),
             sharpe_ratio=_round2(row.sharpe_ratio),
+            insight_summary=insight_summary,
         ),
         equity_curve=[_round2(v) for v in sampled_curve_raw],
         equity_dates=sampled_dates,
+        price_chart=price_chart,
+        ma_short_series=_build_ma_series(price_chart, strategy.ma_short_period),
+        ma_long_series=_build_ma_series(price_chart, strategy.ma_long_period),
     )
 
 
@@ -672,7 +1244,7 @@ def create_live_or_paper_order(
     return create_paper_order(db, side, payload, user_id=user_id)
 
 
-def _resolve_spot_price(db: Session, asset: str) -> tuple[float, str]:
+def _resolve_spot_price(db: Session, asset: str, force_refresh: bool = False) -> tuple[float, str]:
     asset = asset.upper()
     latest_tick = (
         db.query(models.MarketTick)
@@ -691,59 +1263,16 @@ def _resolve_spot_price(db: Session, asset: str) -> tuple[float, str]:
             tick_at = tick_at.astimezone(timezone.utc)
         now_utc = datetime.now(timezone.utc)
         last_tick_age_seconds = (now_utc - tick_at).total_seconds()
-        if last_tick_age_seconds <= 60:
+        if last_tick_age_seconds <= 60 and not force_refresh:
             return _safe_number(float(latest_tick.price), 0.0), "Preço em Cache"
 
     try:
         settings = get_or_create_settings(db)
         service = ExchangeService(settings)
-        _append_log(
-            db,
-            models.LogLevel.info,
-            f"Buscando preço real para {asset}...",
-            {"asset": asset},
-        )
         price = service.fetch_spot_price(asset, cache_ttl_seconds=60, db=db)
         safe_price = _safe_number(price, 0.0)
         if safe_price > 0:
-            if not service._is_crypto_asset(asset) and safe_price > 1000:
-                _append_log(
-                    db,
-                    models.LogLevel.warning,
-                    f"Buscando preço real para {asset}... Resultado: inválido ({_round2(safe_price)})",
-                    {"asset": asset, "price": _round2(safe_price), "reason": "brl_sanity_guard"},
-                )
-                db.commit()
-                if last_saved_price and last_saved_price > 0:
-                    return _round2(last_saved_price), "Preço em Cache"
-                return 0.0, "Preço em Cache"
-            # guarda contra saltos abruptos por erro de provider (escala errada)
-            if last_saved_price and last_saved_price > 0:
-                deviation = abs(safe_price - last_saved_price) / last_saved_price
-                # só trava por desvio alto quando o tick local ainda está fresco
-                if deviation > 0.20 and (last_tick_age_seconds is not None and last_tick_age_seconds <= 900):
-                    _append_log(
-                        db,
-                        models.LogLevel.warning,
-                        f"Buscando preço real para {asset}... Resultado: desvio alto, mantendo cache",
-                        {
-                            "asset": asset,
-                            "live_price": _round2(safe_price),
-                            "cached_price": _round2(last_saved_price),
-                            "deviation": _round2(deviation * 100),
-                        },
-                    )
-                    db.commit()
-                    return _round2(last_saved_price), "Preço em Cache"
-            db.add(models.MarketTick(asset=asset, price=price, volume=0, tick_at=datetime.now(timezone.utc)))
-            # limpa ticks defasados que distorcem gráfico/sincronia
-            if not service._is_crypto_asset(asset):
-                lower = safe_price * 0.5
-                upper = safe_price * 1.5
-                db.query(models.MarketTick).filter(
-                    models.MarketTick.asset == asset,
-                    (models.MarketTick.price < lower) | (models.MarketTick.price > upper),
-                ).delete(synchronize_session=False)
+            db.add(models.MarketTick(asset=asset, price=safe_price, volume=0, tick_at=datetime.now(timezone.utc)))
             _append_log(
                 db,
                 models.LogLevel.info,
@@ -754,22 +1283,24 @@ def _resolve_spot_price(db: Session, asset: str) -> tuple[float, str]:
             return _round2(safe_price), "Preço ao Vivo"
     except Exception:
         db.rollback()
-        # fallback robusto: nunca cruza ativo entre caches
 
     if last_saved_price and last_saved_price > 0:
         return _round2(last_saved_price), "Preço em Cache"
 
-    raise ValueError(f"Sem cache local para o ativo {asset}. Aguarde nova cotação deste ativo.")
+    # regra rígida: sem inventar preço (nada de 1.0)
+    raise ValueError(f"Preço indisponível para {asset}. Sem cotação ao vivo e sem tick em cache.")
 
 
 def get_paper_state(db: Session, user_id: uuid.UUID, focus_asset: str | None = None) -> schemas.PaperStateResponse:
     balance_row = get_or_create_user_balance(db, user_id)
     open_position = get_user_open_position(db, user_id)
-    asset = (focus_asset or (open_position.asset if open_position else None) or "PETR4").upper()
+    strategy = get_or_create_strategy(db)
+    strategy_asset = (strategy.asset or "PETR4").upper()
+    asset = (focus_asset or strategy_asset).upper()
     if focus_asset:
         ExchangeService.clear_spot_cache(asset)
     try:
-        current_price, price_status = _resolve_spot_price(db, asset)
+        current_price, price_status = _resolve_spot_price(db, asset, force_refresh=bool(open_position and float(open_position.quantity) > 0))
     except ValueError:
         current_price, price_status = 0.0, "Sem cache para o ativo"
 
@@ -780,7 +1311,7 @@ def get_paper_state(db: Session, user_id: uuid.UUID, focus_asset: str | None = N
             position_price = current_price
         else:
             try:
-                position_price, _ = _resolve_spot_price(db, position_asset)
+                position_price, _ = _resolve_spot_price(db, position_asset, force_refresh=True)
             except Exception:
                 db.rollback()
                 position_price = 0.0
@@ -838,7 +1369,7 @@ def close_open_position(db: Session, user_id: uuid.UUID) -> models.PaperOrder:
         db.commit()
         raise ValueError("Sem posição aberta para fechar.")
 
-    sell_price, _ = _resolve_spot_price(db, open_position.asset)
+    sell_price, _ = _resolve_spot_price(db, open_position.asset, force_refresh=True)
     if not sell_price or sell_price <= 0:
         _append_log(
             db,

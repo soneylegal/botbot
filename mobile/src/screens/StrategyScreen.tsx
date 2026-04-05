@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
+import { useStrategyContext } from '../context/StrategyContext';
 import { useAppTheme } from '../theme';
 import { emitConfigChanged } from '../services/events';
-import { fetchAssetUniverse, fetchStrategy, saveStrategy } from '../services/api';
+import { fetchAssetUniverse, saveStrategy } from '../services/api';
 
 export function StrategyScreen() {
   const { colors } = useAppTheme();
@@ -13,28 +14,28 @@ export function StrategyScreen() {
   const [maLong, setMaLong] = useState(21);
   const [saving, setSaving] = useState(false);
   const [assets, setAssets] = useState<string[]>(['PETR4', 'VALE3', 'ITUB4']);
-  const [isLoading, setIsLoading] = useState(true);
+  const { strategy, loading: strategyLoading, setStrategyLocal } = useStrategyContext();
 
   useEffect(() => {
     (async () => {
       try {
-        const [data, universe] = await Promise.all([fetchStrategy(), fetchAssetUniverse()]);
+        const universe = await fetchAssetUniverse();
         if (Array.isArray(universe?.all) && universe.all.length > 0) {
           setAssets(universe.all);
         }
-        if (data && typeof data === 'object') {
-          if (typeof data.asset === 'string' && data.asset.length > 0) setAsset(data.asset);
-          if (typeof data.timeframe === 'string' && data.timeframe.length > 0) setTimeframe(data.timeframe);
-          if (typeof data.ma_short_period === 'number' && Number.isFinite(data.ma_short_period)) setMaShort(data.ma_short_period);
-          if (typeof data.ma_long_period === 'number' && Number.isFinite(data.ma_long_period)) setMaLong(data.ma_long_period);
-        }
       } catch {
         // preserve current local state on bootstrap failure
-      } finally {
-        setIsLoading(false);
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (!strategy) return;
+    if (typeof strategy.asset === 'string' && strategy.asset.length > 0) setAsset(strategy.asset);
+    if (typeof strategy.timeframe === 'string' && strategy.timeframe.length > 0) setTimeframe(strategy.timeframe);
+    if (typeof strategy.ma_short_period === 'number' && Number.isFinite(strategy.ma_short_period)) setMaShort(strategy.ma_short_period);
+    if (typeof strategy.ma_long_period === 'number' && Number.isFinite(strategy.ma_long_period)) setMaLong(strategy.ma_long_period);
+  }, [strategy]);
 
   const onSave = async () => {
     if (maLong <= maShort) {
@@ -44,7 +45,9 @@ export function StrategyScreen() {
 
     setSaving(true);
     try {
-      await saveStrategy({ asset, timeframe, ma_short_period: maShort, ma_long_period: maLong });
+      const next = { asset, timeframe, ma_short_period: maShort, ma_long_period: maLong };
+      await saveStrategy(next);
+      setStrategyLocal(next);
       emitConfigChanged();
       Alert.alert('Sucesso', 'Estratégia salva.');
     } catch {
@@ -56,7 +59,7 @@ export function StrategyScreen() {
 
   const styles = useMemo(() => createStyles(colors), [colors]);
 
-  if (isLoading) {
+  if (strategyLoading) {
     return (
       <View style={styles.loaderWrap}>
         <ActivityIndicator color={colors.primary} />
@@ -106,7 +109,7 @@ export function StrategyScreen() {
       />
 
       <Pressable style={[styles.button, saving && styles.buttonDisabled]} onPress={() => void onSave()} disabled={saving}>
-        <Text style={styles.buttonText}>{saving ? 'Salvando...' : 'Salvar Estratégia'}</Text>
+        {saving ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.buttonText}>Salvar Estratégia</Text>}
       </Pressable>
     </ScrollView>
   );

@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.crud import create_log, list_logs
+from app.core2 import create_log, list_logs
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import User

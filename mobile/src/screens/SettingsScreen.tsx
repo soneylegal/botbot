@@ -151,11 +151,11 @@ export function SettingsScreen() {
       />
 
       <Pressable style={[styles.button, testing && styles.buttonDisabled]} onPress={() => void onSaveAndTest()} disabled={testing}>
-        <Text style={styles.buttonText}>{testing ? 'Testando conexão...' : 'Salvar e Testar Conexão'}</Text>
+        {testing ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.buttonText}>Salvar e Testar Conexão</Text>}
       </Pressable>
 
       <Pressable style={[styles.secondaryButton, testing && styles.buttonDisabled]} onPress={() => void onResetPaperWithBalance()} disabled={testing}>
-        <Text style={styles.secondaryButtonText}>Resetar Carteira com Saldo Inicial</Text>
+        {testing ? <ActivityIndicator color={colors.text} size="small" /> : <Text style={styles.secondaryButtonText}>Resetar Carteira com Saldo Inicial</Text>}
       </Pressable>
 
       <View style={styles.toggleRow}>

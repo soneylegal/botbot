@@ -138,7 +138,12 @@ export type DashboardData = {
   price_status?: string;
   position_qty?: number;
   avg_entry_price?: number;
-  chart: Array<{ t: string; p: number }>;
+  timeframe?: string;
+  ma_short_period?: number;
+  ma_long_period?: number;
+  chart: Array<{ time: string; open: number; high: number; low: number; close: number }>;
+  ma_short_series?: Array<{ time: string; value: number }>;
+  ma_long_series?: Array<{ time: string; value: number }>;
 };
 
 export type StrategyConfig = {
@@ -162,9 +167,13 @@ export type BacktestData = {
     win_rate: number;
     max_drawdown: number;
     sharpe_ratio: number;
+    insight_summary?: string;
   };
   equity_curve: number[];
   equity_dates?: string[];
+  price_chart?: Array<{ time: string; open: number; high: number; low: number; close: number }>;
+  ma_short_series?: Array<{ time: string; value: number }>;
+  ma_long_series?: Array<{ time: string; value: number }>;
 };
 
 export type LogRow = {
@@ -204,9 +213,23 @@ export type PaperState = {
   }>;
 };
 
-export async function fetchDashboard() {
-  const { data } = await api.get<DashboardData>('/dashboard');
+export type PaperOrderRow = {
+  id: number;
+  side: 'buy' | 'sell';
+  asset: string;
+  price: number;
+  quantity: number;
+  status: string;
+  created_at: string;
+};
+
+export async function fetchDashboard(includeChart = true) {
+  const { data } = await api.get<DashboardData>(`/dashboard?include_chart=${includeChart ? 'true' : 'false'}`);
   return data;
+}
+
+export async function fetchDashboardLite() {
+  return fetchDashboard(false);
 }
 
 export async function fetchStrategy() {
@@ -265,6 +288,11 @@ export async function testConnection() {
 export async function fetchPaperState(asset?: string) {
   const suffix = asset ? `?asset=${encodeURIComponent(asset)}` : '';
   const { data } = await api.get<PaperState>(`/paper/state${suffix}`);
+  return data;
+}
+
+export async function fetchRecentPaperOrders(limit = 25) {
+  const { data } = await api.get<PaperOrderRow[]>(`/paper/orders/recent?limit=${encodeURIComponent(String(limit))}`);
   return data;
 }
 

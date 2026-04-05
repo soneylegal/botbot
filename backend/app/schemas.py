@@ -40,6 +40,19 @@ class TickPoint(BaseModel):
     p: float
 
 
+class CandlePoint(BaseModel):
+    time: str
+    open: float
+    high: float
+    low: float
+    close: float
+
+
+class IndicatorPoint(BaseModel):
+    time: str
+    value: float
+
+
 class DashboardResponse(BaseModel):
     status: str
     daily_pnl: float
@@ -47,7 +60,12 @@ class DashboardResponse(BaseModel):
     price_status: str = "live"
     position_qty: float = 0
     avg_entry_price: float = 0
-    chart: list[TickPoint]
+    timeframe: str | None = None
+    ma_short_period: int | None = None
+    ma_long_period: int | None = None
+    chart: list[CandlePoint]
+    ma_short_series: list[IndicatorPoint] = []
+    ma_long_series: list[IndicatorPoint] = []
 
 
 class StrategyConfigIn(BaseModel):
@@ -67,6 +85,7 @@ class BacktestMetrics(BaseModel):
     win_rate: float
     max_drawdown: float
     sharpe_ratio: float
+    insight_summary: str | None = None
 
 
 class BacktestResponse(BaseModel):
@@ -74,6 +93,9 @@ class BacktestResponse(BaseModel):
     metrics: BacktestMetrics
     equity_curve: list[float]
     equity_dates: list[str] = []
+    price_chart: list[CandlePoint] = []
+    ma_short_series: list[IndicatorPoint] = []
+    ma_long_series: list[IndicatorPoint] = []
 
 
 class BacktestRunIn(BaseModel):

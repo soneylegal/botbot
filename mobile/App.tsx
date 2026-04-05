@@ -4,7 +4,9 @@ import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AppNavigator } from './src/navigation/AppNavigator';
+import { StrategyProvider } from './src/context/StrategyContext';
 import { LoginScreen } from './src/screens/LoginScreen';
+import { emitConfigChanged } from './src/services/events';
 import { clearVisualCacheOnColdStart, fetchSettings } from './src/services/api';
 import { ThemeProvider, useAppTheme } from './src/theme';
 
@@ -18,6 +20,7 @@ function RootApp() {
 
   useEffect(() => {
     if (!isAuthenticated) return;
+    emitConfigChanged();
     (async () => {
       try {
         const settings = await fetchSettings();
@@ -52,7 +55,9 @@ export default function App() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider>
-        <RootApp />
+        <StrategyProvider>
+          <RootApp />
+        </StrategyProvider>
       </ThemeProvider>
     </GestureHandlerRootView>
   );

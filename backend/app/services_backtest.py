@@ -4,12 +4,31 @@ import pandas as pd
 
 
 def run_ma_backtest(
-    prices: list[float],
+    prices: list[float] | list[dict],
     timestamps: list[pd.Timestamp],
     ma_short: int,
     ma_long: int,
     initial_capital: float = 10000.0,
 ) -> dict:
+    if prices and isinstance(prices[0], dict):
+        candles = [row for row in prices if isinstance(row, dict)]
+        parsed_prices: list[float] = []
+        parsed_timestamps: list[pd.Timestamp] = []
+        for row in candles:
+            try:
+                close = float(row.get("close") or 0)
+                if close <= 0:
+                    continue
+                raw_time = str(row.get("time") or "")
+                ts = pd.to_datetime(raw_time, utc=True)
+                parsed_prices.append(close)
+                parsed_timestamps.append(ts)
+            except Exception:
+                continue
+        prices = parsed_prices
+        if parsed_timestamps:
+            timestamps = parsed_timestamps
+
     df = pd.DataFrame({"close": prices}, index=pd.to_datetime(timestamps, utc=True)).sort_index()
     df["ma_short"] = df["close"].rolling(ma_short).mean()
     df["ma_long"] = df["close"].rolling(ma_long).mean()

@@ -1,79 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Dimensions, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
-import { LineChart } from 'react-native-chart-kit';
+import { useStrategyContext } from '../context/StrategyContext';
 import { fetchAssetUniverse, fetchBacktest, BacktestData, runBacktest } from '../services/api';
 import { onConfigChanged } from '../services/events';
 import { useAppTheme } from '../theme';
-
-const screenWidth = Dimensions.get('window').width;
+import { TradingViewCandles } from '../components/TradingViewCandles';
 
 type PeriodCode = '1mo' | '6mo' | '1y';
-
-function sampleSeries(points: number[], maxPoints = 100): number[] {
-  if (points.length <= maxPoints) return points;
-  const step = (points.length - 1) / (maxPoints - 1);
-  const sampled: number[] = [];
-  for (let i = 0; i < maxPoints; i += 1) {
-    sampled.push(points[Math.round(i * step)]);
-  }
-  return sampled;
-}
-
-function sampleLabels(points: string[], maxPoints = 100): string[] {
-  if (points.length <= maxPoints) return points;
-  const step = (points.length - 1) / (maxPoints - 1);
-  const sampled: string[] = [];
-  for (let i = 0; i < maxPoints; i += 1) {
-    sampled.push(points[Math.round(i * step)]);
-  }
-  return sampled;
-}
-
-function buildSparseLabels(points: string[], targetLen: number): string[] {
-  if (targetLen <= 0) return [];
-  const labels = Array.from({ length: targetLen }, () => '');
-  if (!points.length) return labels;
-
-  const sampled = sampleLabels(points, targetLen);
-  const last = targetLen - 1;
-  const marks = Array.from(new Set([0, Math.round(last * 0.25), Math.round(last * 0.5), Math.round(last * 0.75), last]));
-
-  for (const idx of marks) {
-    labels[idx] = formatDateLabel(sampled[idx]);
-  }
-  return labels;
-}
-
-function sanitizeSeries(points: number[]): number[] {
-  let lastValid = 0;
-  const cleaned: number[] = [];
-  for (const p of points) {
-    const v = Number(p);
-    if (Number.isFinite(v) && v > 0) {
-      lastValid = v;
-      cleaned.push(v);
-    } else if (lastValid > 0) {
-      cleaned.push(lastValid);
-    }
-  }
-  return cleaned;
-}
-
-function formatDateLabel(value?: string) {
-  if (!value) return '';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return '';
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  return `${dd}/${mm}`;
-}
-
-function hasVolatility(values: number[]) {
-  if (values.length < 2) return false;
-  const first = values[0];
-  return values.some((v) => v !== first);
-}
 
 export function BacktestScreen() {
   const { colors, darkMode } = useAppTheme();
@@ -82,6 +16,7 @@ export function BacktestScreen() {
   const [period, setPeriod] = useState<PeriodCode>('6mo');
   const [running, setRunning] = useState(false);
   const [assets, setAssets] = useState<string[]>(['PETR4', 'BTC', 'ETH']);
+  const { strategy } = useStrategyContext();
 
   const styles = useMemo(() => createStyles(colors), [colors]);
 
@@ -103,6 +38,12 @@ export function BacktestScreen() {
     return off;
   }, []);
 
+  useEffect(() => {
+    const strategyAsset = strategy?.asset?.toUpperCase?.();
+    if (!strategyAsset || strategyAsset === asset) return;
+    setAsset(strategyAsset);
+  }, [asset, strategy?.asset]);
+
   const onRunBacktest = async () => {
     setRunning(true);
     try {
@@ -115,89 +56,91 @@ export function BacktestScreen() {
     }
   };
 
-  const sampledCurve = useMemo(() => sanitizeSeries(sampleSeries(data?.equity_curve ?? [])), [data?.equity_curve]);
-  const sampledDates = useMemo(() => buildSparseLabels(data?.equity_dates ?? [], sampledCurve.length), [data?.equity_dates, sampledCurve.length]);
-  const canRenderChart = hasVolatility(sampledCurve);
+  const canRenderChart = (data?.price_chart?.length ?? 0) > 0;
   const isCrypto = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'TRX', 'AVAX', 'DOT'].includes(asset.toUpperCase());
   const currency = isCrypto ? 'USD' : 'BRL';
-  const yAxisLabel = currency === 'USD' ? 'US$ ' : 'R$ ';
+  const moneyFmt = useMemo(
+    () => new Intl.NumberFormat('pt-BR', { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    [currency]
+  );
 
   if (!data) {
     return (
-      <View style={styles.center}>
+      <View style={[styles.center, { flex: 1 }]}>
         <ActivityIndicator color={colors.primary} />
       </View>
     );
   }
 
   return (
-    <ScrollView style={styles.container}>
-      <Text style={styles.title}>Período: {data.period_label}</Text>
-      <View style={styles.filterWrap}>
-        <Text style={styles.filterLabel}>Ativo</Text>
-        <View style={styles.pickerWrap}>
-          <Picker selectedValue={asset} onValueChange={setAsset} dropdownIconColor={colors.text} style={styles.picker}>
-            {assets.map((symbol) => (
-              <Picker.Item key={symbol} label={symbol} value={symbol} />
-            ))}
-          </Picker>
-        </View>
-        <Text style={styles.filterLabel}>Período</Text>
-        <View style={styles.pickerWrap}>
-          <Picker selectedValue={period} onValueChange={setPeriod} dropdownIconColor={colors.text} style={styles.picker}>
-            <Picker.Item label="1 mês" value="1mo" />
-            <Picker.Item label="6 meses" value="6mo" />
-            <Picker.Item label="1 ano" value="1y" />
-          </Picker>
-        </View>
-      </View>
-      <Pressable style={[styles.runBtn, running && styles.runBtnDisabled]} onPress={() => void onRunBacktest()} disabled={running}>
-        <Text style={styles.runBtnText}>{running ? 'Rodando backtest...' : 'Rodar Backtest'}</Text>
-      </Pressable>
-      {canRenderChart ? (
-        <LineChart
-          data={{ labels: sampledDates, datasets: [{ data: sampledCurve }] }}
-          width={screenWidth - 24}
-          height={220}
-          yAxisLabel={yAxisLabel}
-          withDots={false}
-          withInnerLines
-          chartConfig={{
-            backgroundGradientFrom: darkMode ? '#0b0f1a' : '#ffffff',
-            backgroundGradientTo: darkMode ? '#0b0f1a' : '#ffffff',
-            color: () => '#60a5fa',
-            labelColor: () => colors.muted,
-            decimalPlaces: 0,
-          }}
-          bezier
-          style={styles.chart}
-        />
-      ) : (
-        <Text style={{ textAlign: 'center', marginVertical: 20, color: colors.muted }}>
-          Aguardando volatilidade ou dados do mercado...
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      <ScrollView 
+        style={{ flex: 1 }} 
+        contentContainerStyle={{ paddingBottom: 40, flexGrow: 1, padding: 12 }}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text style={styles.explain}>
+          Simulação do cruzamento de médias (MA Curta vs MA Longa) no histórico do ativo para avaliar a rentabilidade da estratégia.
         </Text>
-      )}
+        <Text style={styles.axisHint}>Eixo Y = Evolução do Capital Simulado | Eixo X = Linha do Tempo</Text>
+        <Text style={styles.title}>Período: {data.period_label}</Text>
+        <View style={styles.filterWrap}>
+          <Text style={styles.filterLabel}>Ativo</Text>
+          <View style={styles.pickerWrap}>
+            <Picker selectedValue={asset} onValueChange={setAsset} dropdownIconColor={colors.text} style={styles.picker}>
+              {assets.map((symbol) => (
+                <Picker.Item key={symbol} label={symbol} value={symbol} />
+              ))}
+            </Picker>
+          </View>
+          <Text style={styles.filterLabel}>Período</Text>
+          <View style={styles.pickerWrap}>
+            <Picker selectedValue={period} onValueChange={setPeriod} dropdownIconColor={colors.text} style={styles.picker}>
+              <Picker.Item label="1 mês" value="1mo" />
+              <Picker.Item label="6 meses" value="6mo" />
+              <Picker.Item label="1 ano" value="1y" />
+            </Picker>
+          </View>
+        </View>
+        <Pressable style={[styles.runBtn, running && styles.runBtnDisabled]} onPress={() => void onRunBacktest()} disabled={running}>
+          {running ? <ActivityIndicator color="#fff" size="small" /> : <Text style={styles.runBtnText}>Rodar Backtest</Text>}
+        </Pressable>
+        {canRenderChart ? (
+          <TradingViewCandles
+            candles={data?.price_chart ?? []}
+            maShort={data?.ma_short_series ?? []}
+            maLong={data?.ma_long_series ?? []}
+            darkMode={darkMode}
+            height={300}
+          />
+        ) : (
+          <Text style={{ textAlign: 'center', marginVertical: 20, color: colors.muted }}>
+            Gráfico temporariamente indisponível.
+          </Text>
+        )}
 
-      <View style={styles.metricsRow}>
-        <MetricCard label="Retorno Total" value={`${data.metrics.total_return.toFixed(2)}%`} success colors={colors} styles={styles} />
-        <MetricCard label="Win Rate" value={`${data.metrics.win_rate.toFixed(2)}%`} success colors={colors} styles={styles} />
-      </View>
-      <View style={styles.metricsRow}>
-        <MetricCard label="Max Drawdown" value={`${data.metrics.max_drawdown.toFixed(2)}%`} danger colors={colors} styles={styles} />
-        <MetricCard label="Sharpe" value={data.metrics.sharpe_ratio.toFixed(2)} success colors={colors} styles={styles} />
-      </View>
-    </ScrollView>
+        <Text style={styles.subtleLine}>Capital final: {moneyFmt.format(Number(data.equity_curve?.at(-1) ?? 0))}</Text>
+
+        <View style={styles.metricsRow}>
+          <MetricCard label="Retorno Total" value={`${data.metrics.total_return.toFixed(2)}%`} success colors={colors} styles={styles} />
+          <MetricCard label="Win Rate" value={`${data.metrics.win_rate.toFixed(2)}%`} success colors={colors} styles={styles} />
+        </View>
+        <View style={styles.metricsRow}>
+          <MetricCard label="Max Drawdown" value={`${data.metrics.max_drawdown.toFixed(2)}%`} danger colors={colors} styles={styles} />
+          <MetricCard label="Sharpe" value={data.metrics.sharpe_ratio.toFixed(2)} success colors={colors} styles={styles} />
+        </View>
+
+        {data.metrics.insight_summary ? (
+          <View style={styles.insightBox}>
+            <Text style={styles.insightText}>{data.metrics.insight_summary}</Text>
+          </View>
+        ) : null}
+      </ScrollView>
+    </View>
   );
 }
 
-function MetricCard({
-  label,
-  value,
-  success,
-  danger,
-  colors,
-  styles,
-}: {
+function MetricCard({ label, value, success, danger, colors, styles }: {
   label: string;
   value: string;
   success?: boolean;
@@ -232,19 +175,13 @@ const createStyles = (colors: ReturnType<typeof useAppTheme>['colors']) =>
     filterLabel: { color: colors.text, fontWeight: '600', marginBottom: 4, marginTop: 4 },
     pickerWrap: { backgroundColor: colors.cardSoft, borderRadius: 10, borderWidth: 1, borderColor: colors.border },
     picker: { color: colors.text },
-    chart: { borderRadius: 12 },
-    chartUnavailable: {
-      backgroundColor: colors.card,
-      borderRadius: 12,
-      borderWidth: 1,
-      borderColor: colors.border,
-      minHeight: 120,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    emptyChartText: { color: colors.muted },
-    metricsRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
-    metricCard: { flex: 1, backgroundColor: colors.card, borderRadius: 12, padding: 12 },
-    metricLabel: { color: colors.muted, fontSize: 13 },
-    metricValue: { color: colors.text, fontSize: 22, fontWeight: '700', marginTop: 6 },
+    metricsRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
+    metricCard: { width: '48%', backgroundColor: colors.card, padding: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border },
+    metricLabel: { color: colors.text, fontSize: 12, marginBottom: 4 },
+    metricValue: { fontWeight: 'bold', fontSize: 16 },
+    explain: { color: colors.muted, marginBottom: 8, lineHeight: 20 },
+    axisHint: { color: colors.muted, marginBottom: 10, fontSize: 12 },
+    subtleLine: { color: colors.muted, marginTop: 10 },
+    insightBox: { backgroundColor: colors.cardSoft, padding: 12, borderRadius: 10, marginTop: 10, borderWidth: 1, borderColor: colors.primary + '40' },
+    insightText: { color: colors.text, fontSize: 14, lineHeight: 22 },
   });

@@ -2,7 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app import models
-from app.crud import close_open_position, create_live_or_paper_order, get_paper_state, reset_paper_wallet
+from app.core2 import (
+    close_open_position,
+    create_live_or_paper_order,
+    get_paper_state,
+    list_recent_paper_orders,
+    reset_paper_wallet,
+)
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import User
@@ -18,6 +24,15 @@ def get_state(
     _: User = Depends(get_current_user),
 ):
     return get_paper_state(db, user_id=_.id, focus_asset=asset)
+
+
+@router.get("/orders/recent", response_model=list[PaperOrderOut])
+def get_recent_orders(
+    limit: int = Query(25, ge=1, le=100, description="Quantidade de ordens para retornar"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    return list_recent_paper_orders(db, user_id=_.id, limit=limit)
 
 
 @router.post("/buy", response_model=PaperOrderOut)

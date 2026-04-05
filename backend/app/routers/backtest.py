@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.asset_universe import ALL_ASSETS, B3_TOP20, CRYPTO_TOP10
-from app.crud import get_latest_backtest, run_backtest
+from app.core2 import get_latest_backtest, run_backtest
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import User
@@ -20,9 +20,9 @@ def get_backtest_assets(_: User = Depends(get_current_user)):
 
 
 @router.get("/results", response_model=BacktestResponse)
-def get_backtest_results(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+def get_backtest_results(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     try:
-        return get_latest_backtest(db)
+        return get_latest_backtest(db, user_id=current_user.id)
     except Exception as e:
         logger.error(f"Erro na rota: {e}")
         raise HTTPException(
