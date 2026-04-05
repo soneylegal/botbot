@@ -16,7 +16,7 @@ def run_ma_backtest(
     df = df.dropna().copy()
 
     if df.empty:
-        return {"equity_curve": [initial_capital], "total_return": 0.0, "win_rate": 0.0, "max_drawdown": 0.0, "sharpe_ratio": 0.0}
+        raise ValueError("Dados insuficientes para este período")
 
     cash = float(initial_capital)
     qty = 0.0
@@ -25,8 +25,9 @@ def run_ma_backtest(
     wins = 0
     trades = 0
     equity_curve: list[float] = []
+    equity_timestamps: list[str] = []
 
-    for _, row in df.iterrows():
+    for ts, row in df.iterrows():
         price = float(row["close"])
         signal = 1 if float(row["ma_short"]) > float(row["ma_long"]) else 0
 
@@ -44,6 +45,7 @@ def run_ma_backtest(
             entry_price = 0.0
 
         equity_curve.append(cash + qty * price)
+        equity_timestamps.append(ts.isoformat())
         prev_signal = signal
 
     if qty > 0.0:
@@ -68,6 +70,7 @@ def run_ma_backtest(
 
     return {
         "equity_curve": [float(v) for v in equity_curve],
+        "equity_timestamps": equity_timestamps,
         "total_return": float(total_return),
         "win_rate": float(win_rate),
         "max_drawdown": float(max_drawdown),

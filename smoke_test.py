@@ -65,6 +65,26 @@ def main():
 
     status, settings = req("GET", "/settings", token=token)
     ensure(status == 200 and "trade_mode" in settings, "fetch settings")
+    expected_reset_balance = float(settings.get("simulated_balance") or 10000.0)
+
+    status, _ = req(
+        "PUT",
+        "/settings",
+        {
+            "exchange_name": settings.get("exchange_name", "binance"),
+            "trade_mode": settings.get("trade_mode", "paper"),
+            "paper_trading": bool(settings.get("paper_trading", True)),
+            "dark_mode": bool(settings.get("dark_mode", True)),
+            "simulated_balance": 12000.0,
+        },
+        token=token,
+    )
+    ensure(status == 200, "update settings simulated balance")
+    expected_reset_balance = 12000.0
+
+    with open("/home/archsoney/botbot/backend/app/services_exchange.py", "r", encoding="utf-8") as f:
+        exchange_source = f.read()
+    ensure("auto_adjust=False" in exchange_source, "historical auto_adjust disabled")
 
     strategy_payload = {"asset": "BTC", "timeframe": "5M", "ma_short_period": 9, "ma_long_period": 21}
     status, strategy = req("PUT", "/strategy/config", strategy_payload, token=token)
@@ -93,11 +113,12 @@ def main():
     ensure(status == 200 and close.get("side") == "sell", "paper close position")
 
     status, reset = req("POST", "/paper/reset", {}, token=token)
-    ensure(status == 200 and abs(float(reset.get("balance") or 0) - 10000.0) < 0.01, "paper reset balance")
+    ensure(status == 200 and abs(float(reset.get("balance") or 0) - expected_reset_balance) < 0.01, "paper reset balance")
     ensure(float(reset.get("open_position_qty") or 0) == 0.0, "paper reset position")
 
     status, backtest = req("POST", "/backtest/run", {"period_label": "1 Month", "asset": "BTC"}, token=token)
     ensure(status == 200 and len(backtest.get("equity_curve", [])) > 0, "backtest run")
+    ensure(abs(float(backtest.get("equity_curve", [0])[-1]) - 10000.0) > 0.01, "backtest not hardcoded 10000")
 
     status, logs = req("GET", "/logs?limit=20", token=token)
     ensure(status == 200 and isinstance(logs, list), "logs list")

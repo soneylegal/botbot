@@ -5,12 +5,16 @@ import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AppNavigator } from './src/navigation/AppNavigator';
 import { LoginScreen } from './src/screens/LoginScreen';
-import { fetchSettings } from './src/services/api';
+import { clearVisualCacheOnColdStart, fetchSettings } from './src/services/api';
 import { ThemeProvider, useAppTheme } from './src/theme';
 
 function RootApp() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const { colors, darkMode, setDarkMode } = useAppTheme();
+
+  useEffect(() => {
+    void clearVisualCacheOnColdStart();
+  }, []);
 
   useEffect(() => {
     if (!isAuthenticated) return;

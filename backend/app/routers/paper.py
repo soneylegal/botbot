@@ -99,6 +99,6 @@ def reset_wallet(
     _: User = Depends(get_current_user),
 ):
     try:
-        return reset_paper_wallet(db, user_id=_.id, initial_balance=(initial_balance or 10000.0))
+        return reset_paper_wallet(db, user_id=_.id, initial_balance=initial_balance)
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Não foi possível resetar a carteira paper.") from exc

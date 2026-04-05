@@ -1,13 +1,12 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Dimensions, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Alert, Dimensions, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { LineChart } from 'react-native-chart-kit';
-import { PinchGestureHandler, State } from 'react-native-gesture-handler';
 import { fetchAssetUniverse, fetchBacktest, BacktestData, runBacktest } from '../services/api';
 import { onConfigChanged } from '../services/events';
 import { useAppTheme } from '../theme';
 
-const width = Dimensions.get('window').width - 40;
+const screenWidth = Dimensions.get('window').width;
 
 function sampleSeries(points: number[], maxPoints = 100): number[] {
   if (points.length <= maxPoints) return points;
@@ -17,6 +16,32 @@ function sampleSeries(points: number[], maxPoints = 100): number[] {
     sampled.push(points[Math.round(i * step)]);
   }
   return sampled;
+}
+
+function sampleLabels(points: string[], maxPoints = 100): string[] {
+  if (points.length <= maxPoints) return points;
+  const step = (points.length - 1) / (maxPoints - 1);
+  const sampled: string[] = [];
+  for (let i = 0; i < maxPoints; i += 1) {
+    sampled.push(points[Math.round(i * step)]);
+  }
+  return sampled;
+}
+
+function buildSparseLabels(points: string[], targetLen: number): string[] {
+  if (targetLen <= 0) return [];
+  const labels = Array.from({ length: targetLen }, () => '');
+  if (!points.length) return labels;
+
+  const sampled = sampleLabels(points, targetLen);
+  const last = targetLen - 1;
+  const marks = new Set([0, Math.round(last * 0.25), Math.round(last * 0.5), Math.round(last * 0.75), last]);
+
+  marks.forEach((idx) => {
+    labels[idx] = formatDateLabel(sampled[idx]);
+  });
+
+  return labels;
 }
 
 function sanitizeSeries(points: number[]): number[] {
@@ -34,6 +59,15 @@ function sanitizeSeries(points: number[]): number[] {
   return cleaned;
 }
 
+function formatDateLabel(value?: string) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}/${mm}`;
+}
+
 export function BacktestScreen() {
   const { colors, darkMode } = useAppTheme();
   const [data, setData] = useState<BacktestData | null>(null);
@@ -41,8 +75,6 @@ export function BacktestScreen() {
   const [period, setPeriod] = useState<'1 Month' | '6 Months' | '1 Year'>('6 Months');
   const [running, setRunning] = useState(false);
   const [assets, setAssets] = useState<string[]>(['PETR4', 'BTC', 'ETH']);
-  const pinchScale = useRef(new Animated.Value(1)).current;
-  const onPinchEvent = Animated.event([{ nativeEvent: { scale: pinchScale } }], { useNativeDriver: true });
 
   const styles = useMemo(() => createStyles(colors), [colors]);
 
@@ -69,25 +101,18 @@ export function BacktestScreen() {
     try {
       const res = await runBacktest(period, asset);
       setData(res);
+    } catch (e: any) {
+      Alert.alert('Backtest', e?.response?.data?.detail ?? 'Falha ao executar backtest.');
     } finally {
       setRunning(false);
     }
   };
 
   const sampledCurve = useMemo(() => sanitizeSeries(sampleSeries(data?.equity_curve ?? [])), [data?.equity_curve]);
-
-  const formatCompact = (v: number) => {
-    if (!Number.isFinite(v)) return '0';
-    if (Math.abs(v) >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}m`;
-    if (Math.abs(v) >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
-    return `${v.toFixed(0)}`;
-  };
-
-  const onPinchStateChange = (event: any) => {
-    if (event.nativeEvent.oldState === State.ACTIVE) {
-      Animated.spring(pinchScale, { toValue: 1, useNativeDriver: true }).start();
-    }
-  };
+  const sampledDates = useMemo(() => buildSparseLabels(data?.equity_dates ?? [], sampledCurve.length), [data?.equity_dates, sampledCurve.length]);
+  const isCrypto = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'TRX', 'AVAX', 'DOT'].includes(asset.toUpperCase());
+  const currency = isCrypto ? 'USD' : 'BRL';
+  const yAxisLabel = currency === 'USD' ? 'US$ ' : 'R$ ';
 
   if (!data) {
     return (
@@ -121,30 +146,29 @@ export function BacktestScreen() {
       <Pressable style={[styles.runBtn, running && styles.runBtnDisabled]} onPress={() => void onRunBacktest()} disabled={running}>
         <Text style={styles.runBtnText}>{running ? 'Rodando backtest...' : 'Rodar Backtest'}</Text>
       </Pressable>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chartPanContainer}>
-        <PinchGestureHandler onGestureEvent={onPinchEvent} onHandlerStateChange={onPinchStateChange}>
-          <Animated.View style={[styles.chartWrap, { transform: [{ scale: pinchScale }] }]}>
-            <LineChart
-              data={{ labels: sampledCurve.map(() => ''), datasets: [{ data: sampledCurve.length ? sampledCurve : [0] }] }}
-              width={Math.max(width, sampledCurve.length * 10)}
-              height={220}
-              withDots={false}
-              withInnerLines
-              yLabelsOffset={16}
-              formatYLabel={(value) => formatCompact(Number(value))}
-              chartConfig={{
-                backgroundGradientFrom: darkMode ? '#0b0f1a' : '#ffffff',
-                backgroundGradientTo: darkMode ? '#0b0f1a' : '#ffffff',
-                color: () => '#60a5fa',
-                labelColor: () => colors.muted,
-                decimalPlaces: 0,
-              }}
-              bezier
-              style={styles.chart}
-            />
-          </Animated.View>
-        </PinchGestureHandler>
-      </ScrollView>
+      {sampledCurve.length > 0 ? (
+        <LineChart
+          data={{ labels: sampledDates, datasets: [{ data: sampledCurve }] }}
+          width={screenWidth - 24}
+          height={220}
+          yAxisLabel={yAxisLabel}
+          withDots={false}
+          withInnerLines
+          chartConfig={{
+            backgroundGradientFrom: darkMode ? '#0b0f1a' : '#ffffff',
+            backgroundGradientTo: darkMode ? '#0b0f1a' : '#ffffff',
+            color: () => '#60a5fa',
+            labelColor: () => colors.muted,
+            decimalPlaces: 0,
+          }}
+          bezier
+          style={styles.chart}
+        />
+      ) : (
+        <View style={styles.chartUnavailable}>
+          <Text style={styles.emptyChartText}>Gráfico indisponível para este ativo no momento</Text>
+        </View>
+      )}
 
       <View style={styles.metricsRow}>
         <MetricCard label="Retorno Total" value={`${data.metrics.total_return.toFixed(2)}%`} success colors={colors} styles={styles} />
@@ -200,9 +224,17 @@ const createStyles = (colors: ReturnType<typeof useAppTheme>['colors']) =>
     filterLabel: { color: colors.text, fontWeight: '600', marginBottom: 4, marginTop: 4 },
     pickerWrap: { backgroundColor: colors.cardSoft, borderRadius: 10, borderWidth: 1, borderColor: colors.border },
     picker: { color: colors.text },
-    chartPanContainer: { paddingRight: 12 },
-    chartWrap: { paddingHorizontal: 8, alignItems: 'center' },
     chart: { borderRadius: 12 },
+    chartUnavailable: {
+      backgroundColor: colors.card,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: colors.border,
+      minHeight: 120,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    emptyChartText: { color: colors.muted },
     metricsRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
     metricCard: { flex: 1, backgroundColor: colors.card, borderRadius: 12, padding: 12 },
     metricLabel: { color: colors.muted, fontSize: 13 },

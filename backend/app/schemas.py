@@ -73,6 +73,7 @@ class BacktestResponse(BaseModel):
     period_label: str
     metrics: BacktestMetrics
     equity_curve: list[float]
+    equity_dates: list[str] = []
 
 
 class BacktestRunIn(BaseModel):
@@ -108,6 +109,7 @@ class SettingsIn(BaseModel):
     trade_mode: TradeModeEnum = TradeModeEnum.paper
     paper_trading: bool
     dark_mode: bool
+    simulated_balance: float | None = Field(default=None, gt=0)
 
 
 class SettingsOut(BaseModel):
@@ -117,6 +119,7 @@ class SettingsOut(BaseModel):
     trade_mode: TradeModeEnum = TradeModeEnum.paper
     paper_trading: bool
     dark_mode: bool
+    simulated_balance: float
     updated_at: datetime
 
 

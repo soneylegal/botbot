@@ -1,13 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Dimensions, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Dimensions, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { LineChart } from 'react-native-chart-kit';
-import { PinchGestureHandler, State } from 'react-native-gesture-handler';
 import { useAppTheme } from '../theme';
 import { onConfigChanged } from '../services/events';
 import { DashboardData, fetchDashboard, getMarketWsUrl } from '../services/api';
 
-const width = Dimensions.get('window').width - 24;
+const screenWidth = Dimensions.get('window').width;
 const CRYPTO_ASSETS = new Set(['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'TRX', 'AVAX', 'DOT']);
 
 function normalizeChart(points: Array<{ t: string; p: number }>) {
@@ -31,8 +30,6 @@ export function DashboardScreen() {
   const [loading, setLoading] = useState(true);
   const [wsNonce, setWsNonce] = useState(0);
   const styles = useMemo(() => createStyles(colors), [colors]);
-  const pinchScale = useRef(new Animated.Value(1)).current;
-  const onPinchEvent = Animated.event([{ nativeEvent: { scale: pinchScale } }], { useNativeDriver: true });
 
   const load = useCallback(async () => {
     try {
@@ -96,7 +93,7 @@ export function DashboardScreen() {
           const qty = Number(prev.position_qty ?? 0);
           const avg = Number(prev.avg_entry_price ?? 0);
           const nextPnl = qty > 0 && avg > 0 ? (safePrice - avg) * qty : prev.daily_pnl;
-          return { ...prev, asset: payload.asset || prev.asset, chart: nextChart, daily_pnl: nextPnl };
+          return { ...prev, chart: nextChart, daily_pnl: nextPnl };
         });
       } catch {
         // ignore malformed payload
@@ -109,6 +106,23 @@ export function DashboardScreen() {
     };
   }, [data?.asset, wsNonce]);
 
+  const normalized = normalizeChart(data?.chart ?? []);
+  const prices = normalized.map((p) => p.p);
+  const hasChart = prices.length > 0;
+  const minPrice = hasChart ? Math.min(...prices) : 0;
+  const maxPrice = hasChart ? Math.max(...prices) : 0;
+  const hasVariation = hasChart && prices.length > 1 && maxPrice !== minPrice;
+  const padLow = hasChart ? minPrice * 0.99 : 0;
+  const padHigh = hasChart ? maxPrice * 1.01 : 0;
+  const chartBackground = darkMode ? '#0b0f1a' : '#ffffff';
+  const asset = (data?.asset ?? 'PETR4').toUpperCase();
+  const currency = CRYPTO_ASSETS.has(asset) ? 'USD' : 'BRL';
+  const moneyFmt = useMemo(
+    () => new Intl.NumberFormat('pt-BR', { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    [currency]
+  );
+  const yAxisLabel = currency === 'USD' ? 'US$ ' : 'R$ ';
+
   if (loading && !data) {
     return (
       <View style={styles.center}>
@@ -117,19 +131,6 @@ export function DashboardScreen() {
     );
   }
 
-  const normalized = normalizeChart(data?.chart ?? []);
-  const prices = normalized.map((p) => p.p);
-  const safePrices = prices.length ? prices : [0];
-  const chartBackground = darkMode ? '#0b0f1a' : '#ffffff';
-  const asset = (data?.asset ?? '').toUpperCase();
-  const currencySymbol = CRYPTO_ASSETS.has(asset) ? 'US$ ' : 'R$ ';
-
-  const onPinchStateChange = (event: any) => {
-    if (event.nativeEvent.oldState === State.ACTIVE) {
-      Animated.spring(pinchScale, { toValue: 1, useNativeDriver: true }).start();
-    }
-  };
-
   return (
     <ScrollView
       style={styles.container}
@@ -137,29 +138,33 @@ export function DashboardScreen() {
     >
       <Text style={styles.title}>Ativo: {data?.asset ?? '-'}</Text>
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chartPanContainer}>
-        <PinchGestureHandler onGestureEvent={onPinchEvent} onHandlerStateChange={onPinchStateChange}>
-          <Animated.View style={{ transform: [{ scale: pinchScale }] }}>
-            <LineChart
-              data={{ labels: safePrices.map(() => ''), datasets: [{ data: safePrices }] }}
-              width={Math.max(width, safePrices.length * 10)}
-              height={240}
-              yAxisLabel={currencySymbol}
-              withDots={false}
-              withInnerLines
-              chartConfig={{
-                backgroundGradientFrom: chartBackground,
-                backgroundGradientTo: chartBackground,
-                color: () => colors.primary,
-                labelColor: () => colors.muted,
-                decimalPlaces: 2,
-              }}
-              bezier
-              style={styles.chart}
-            />
-          </Animated.View>
-        </PinchGestureHandler>
-      </ScrollView>
+      {hasVariation ? (
+        <LineChart
+          data={{
+            labels: prices.map(() => ''),
+            datasets: [{ data: prices }],
+          }}
+          width={screenWidth - 24}
+          height={240}
+          yAxisLabel={yAxisLabel}
+          withDots={false}
+          withInnerLines
+          segments={4}
+          chartConfig={{
+            backgroundGradientFrom: chartBackground,
+            backgroundGradientTo: chartBackground,
+            color: () => colors.primary,
+            labelColor: () => colors.muted,
+            decimalPlaces: 2,
+          }}
+          bezier
+          style={styles.chart}
+        />
+      ) : (
+        <View style={styles.chartUnavailable}>
+          <Text style={styles.subtle}>Gráfico indisponível para este ativo no momento</Text>
+        </View>
+      )}
 
       <View style={styles.card}>
         <Text style={styles.row}>Bot Status: <Text style={styles.success}>{data?.status}</Text></Text>
@@ -167,7 +172,7 @@ export function DashboardScreen() {
         <Text style={styles.row}>
           P/L Diário:{' '}
           <Text style={Number(data?.daily_pnl) >= 0 ? styles.success : styles.error}>
-            {currencySymbol}{Number(data?.daily_pnl).toFixed(2)}
+            {moneyFmt.format(Number(data?.daily_pnl ?? 0))}
           </Text>
         </Text>
       </View>
@@ -180,8 +185,17 @@ const createStyles = (colors: ReturnType<typeof useAppTheme>['colors']) =>
     container: { flex: 1, backgroundColor: colors.bg, padding: 12 },
     center: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
     title: { color: colors.text, fontSize: 16, marginBottom: 10 },
-    chartPanContainer: { paddingRight: 12 },
     chart: { borderRadius: 12 },
+    chartUnavailable: {
+      backgroundColor: colors.card,
+      borderColor: colors.border,
+      borderWidth: 1,
+      borderRadius: 12,
+      minHeight: 120,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginBottom: 4,
+    },
     card: { marginTop: 16, backgroundColor: colors.card, borderRadius: 12, padding: 14 },
     row: { color: colors.text, fontSize: 16, marginBottom: 6 },
     subtle: { color: colors.muted, fontSize: 12, marginBottom: 8 },

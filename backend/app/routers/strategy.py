@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -9,11 +11,16 @@ from app.models import User
 from app.schemas import AssetUniverseOut, StrategyConfigIn, StrategyConfigOut
 
 router = APIRouter(prefix="/strategy", tags=["Strategy"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/assets", response_model=AssetUniverseOut)
 def get_strategy_assets(_: User = Depends(get_current_user)):
-    return AssetUniverseOut(b3=B3_TOP20, crypto=CRYPTO_TOP10, all=ALL_ASSETS)
+    try:
+        return AssetUniverseOut(b3=B3_TOP20, crypto=CRYPTO_TOP10, all=ALL_ASSETS)
+    except Exception as e:
+        logger.error(f"Erro na rota: {e}")
+        raise HTTPException(status_code=500, detail={"message": "Falha ao listar ativos", "fallback": []}) from e
 
 
 @router.get("/config", response_model=StrategyConfigOut)

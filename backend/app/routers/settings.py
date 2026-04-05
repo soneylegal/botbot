@@ -20,6 +20,7 @@ def get_settings(db: Session = Depends(get_db), _: User = Depends(get_current_us
         trade_mode=item.trade_mode,
         paper_trading=item.paper_trading,
         dark_mode=item.dark_mode,
+        simulated_balance=float(item.simulated_balance),
         updated_at=item.updated_at,
     )
 
@@ -34,6 +35,7 @@ def save_settings(payload: SettingsIn, db: Session = Depends(get_db), _: User = 
         trade_mode=item.trade_mode,
         paper_trading=item.paper_trading,
         dark_mode=item.dark_mode,
+        simulated_balance=float(item.simulated_balance),
         updated_at=item.updated_at,
     )
 

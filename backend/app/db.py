@@ -17,6 +17,7 @@ def apply_runtime_migrations():
         "ALTER TABLE IF EXISTS app_settings ADD COLUMN IF NOT EXISTS trade_mode trade_mode DEFAULT 'paper'",
         "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"",
         "CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), email VARCHAR(255) UNIQUE NOT NULL, password_hash VARCHAR(255) NOT NULL, is_active BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+        "ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS balance NUMERIC(14,2) NOT NULL DEFAULT 10000",
         "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
         "ALTER TABLE IF EXISTS logs ADD COLUMN IF NOT EXISTS user_id UUID",
         "DO $$ BEGIN ALTER TABLE logs ADD CONSTRAINT fk_logs_user_id FOREIGN KEY (user_id) REFERENCES users(id); EXCEPTION WHEN duplicate_object THEN NULL; END $$;",
@@ -28,6 +29,7 @@ def apply_runtime_migrations():
         "CREATE TABLE IF NOT EXISTS user_positions (id SERIAL PRIMARY KEY, user_id UUID NOT NULL REFERENCES users(id), asset VARCHAR(20) NOT NULL, quantity NUMERIC(14,4) NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), CONSTRAINT uq_user_positions_user_asset UNIQUE(user_id, asset))",
         "CREATE INDEX IF NOT EXISTS idx_user_positions_user_id ON user_positions(user_id)",
         "ALTER TABLE IF EXISTS user_positions ADD COLUMN IF NOT EXISTS avg_entry_price NUMERIC(14,4) NOT NULL DEFAULT 0",
+        "ALTER TABLE IF EXISTS app_settings ADD COLUMN IF NOT EXISTS simulated_balance NUMERIC(14,2) NOT NULL DEFAULT 10000",
     ]
 
     with engine.begin() as conn:

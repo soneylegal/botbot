@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import ccxt
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import importlib
 import time
 import math
+
+requests = None
+try:  # pragma: no cover - optional dependency at runtime
+    requests = importlib.import_module("requests")
+except Exception:
+    requests = None
 
 yf = None
 try:  # pragma: no cover - optional dependency at runtime
@@ -14,6 +20,14 @@ except Exception:
 
 from app import models
 from app.asset_universe import CRYPTO_TOP10
+
+YF_SESSION = None
+if requests is not None:
+    try:
+        YF_SESSION = requests.Session()
+        YF_SESSION.headers.update({"User-Agent": "Mozilla/5.0 Windows NT 10.0"})
+    except Exception:
+        YF_SESSION = None
 
 
 class ExchangeService:
@@ -65,7 +79,14 @@ class ExchangeService:
         last_error = None
         for attempt in range(3):
             try:
-                return yf.download(ticker, period=period, interval=interval, progress=False, auto_adjust=True)
+                return yf.download(
+                    ticker,
+                    period=period,
+                    interval=interval,
+                    progress=False,
+                    auto_adjust=False,
+                    session=YF_SESSION,
+                )
             except Exception as exc:
                 last_error = exc
                 if attempt < 2:
@@ -82,26 +103,35 @@ class ExchangeService:
             return [], []
 
         close_col = df["Close"]
-        values = []
-        if hasattr(close_col, "values"):
+        values: list[float] = []
+        try:
+            # Series path
+            values = close_col.values.tolist()
+        except Exception:
             try:
+                # DataFrame (single-column) path
                 values = close_col.values.flatten().tolist()
             except Exception:
                 values = []
 
-        cleaned = []
-        for v in values:
+        idx = [t.to_pydatetime().replace(tzinfo=timezone.utc) for t in df.index]
+        if not values or not idx:
+            return [], []
+
+        cleaned: list[float] = []
+        cleaned_idx: list[datetime] = []
+        for raw_v, raw_t in zip(values, idx):
             try:
-                n = float(v)
+                n = float(raw_v)
                 if math.isfinite(n) and n > 0:
                     cleaned.append(n)
+                    cleaned_idx.append(raw_t)
             except Exception:
                 continue
 
-        idx = [t.to_pydatetime().replace(tzinfo=timezone.utc) for t in df.index]
-        if not cleaned or len(cleaned) != len(idx):
+        if not cleaned:
             return [], []
-        return cleaned, idx
+        return cleaned, cleaned_idx
 
     def fetch_last_price(self, symbol: str) -> float | None:
         if not self.is_live:
@@ -122,79 +152,68 @@ class ExchangeService:
 
     def fetch_historical_closes(self, asset: str, days: int) -> tuple[list[float], list[datetime]]:
         asset = asset.upper()
-        now = datetime.now(timezone.utc)
-        since = int((now - timedelta(days=days)).timestamp() * 1000)
+        symbol = self._to_yfinance_ticker(asset)
+        period = f"{max(int(days), 1)}d"
 
-        if asset in {"BTC", "ETH", "SOL", "BNB", "ADA", "XRP"}:
-            symbol = f"{asset}/USDT"
+        def _is_valid_series(prices: list[float], times: list[datetime]) -> bool:
+            return len(prices) >= 2 and len(times) >= 2 and len(prices) == len(times)
+
+        if yf is not None:
             try:
-                client = self._build_public_client()
-                candles = client.fetch_ohlcv(symbol, timeframe="1h", since=since, limit=min(1500, days * 24 + 48))
-                prices = [float(c[4]) for c in candles if c and c[4] is not None]
-                times = [datetime.fromtimestamp(c[0] / 1000, tz=timezone.utc) for c in candles if c and c[0] is not None]
-                if prices and len(prices) == len(times):
+                df = self._download_yf_close(symbol, period=period, interval="1d")
+                prices, times = self._extract_close_values(df)
+                if _is_valid_series(prices, times):
                     return prices, times
             except Exception:
                 pass
 
-        ticker = self._to_yfinance_ticker(asset)
+            try:
+                ticker = yf.Ticker(symbol, session=YF_SESSION)
+                df = ticker.history(period=period, interval="1d", auto_adjust=False)
+                prices, times = self._extract_close_values(df)
+                if _is_valid_series(prices, times):
+                    return prices, times
+            except Exception:
+                pass
+
+        if yf is not None:
+            try:
+                fallback_period = "1y" if not self._is_crypto_asset(asset) else "6mo"
+                df = self._download_yf_close(symbol, period=fallback_period, interval="1d")
+                prices, times = self._extract_close_values(df)
+                if _is_valid_series(prices, times):
+                    return prices, times
+            except Exception:
+                pass
+
         if self._is_crypto_asset(asset):
-            fallback_matrix: list[tuple[str, str]] = [
-                (f"{days}d", "1h"),
-                (f"{max(days, 5)}d", "1d"),
-                ("1y", "1d"),
-            ]
-        else:
-            fallback_matrix = [
-                (f"{days}d", "1h" if days <= 60 else "1d"),
-                (f"{days}d", "1d"),
-            ]
+            try:
+                client = self._build_public_client()
+                timeframe = "1h" if days <= 60 else "1d"
+                limit = max(200, min(1000, int(days * (24 if timeframe == "1h" else 1)) + 20))
+                candles = client.fetch_ohlcv(f"{asset}/USDT", timeframe=timeframe, limit=limit)
+                prices = [float(c[4]) for c in candles if c and c[4] is not None and float(c[4]) > 0]
+                times = [datetime.fromtimestamp(c[0] / 1000, tz=timezone.utc) for c in candles if c and c[0] is not None]
+                if _is_valid_series(prices, times):
+                    return prices, times
+            except Exception:
+                pass
 
-        for period, interval in fallback_matrix:
-            df = self._download_yf_close(ticker, period=period, interval=interval)
-            if df is None or df.empty or "Close" not in df:
-                continue
-            closes, idx = self._extract_close_values(df)
-            if closes and len(closes) == len(idx):
-                return closes, idx
-
-        return [], []
+            raise ValueError(f"Sem dados históricos suficientes para {asset}")
 
     def fetch_spot_price(self, asset: str, cache_ttl_seconds: int = 60) -> float | None:
         asset = asset.upper()
-        now_ts = time.time()
+        if yf is None:
+            return None
 
-        cached = self._spot_cache.get(asset)
-        if cached and (now_ts - cached[1]) < cache_ttl_seconds:
-            return cached[0]
+        symbol = self._to_yfinance_ticker(asset)
+        ticker = yf.Ticker(symbol, session=YF_SESSION)
 
-        price: float | None = None
-
-        if asset in {"BTC", "ETH", "SOL", "BNB", "ADA", "XRP"}:
-            try:
-                client = self._build_public_client()
-                ticker = client.fetch_ticker(f"{asset}/USDT")
-                p = float(ticker.get("last") or ticker.get("close") or 0)
-                if p > 0:
-                    price = p
-            except Exception:
-                price = None
-
-        if price is None:
-            ticker = self._to_yfinance_ticker(asset)
-            hist = self._download_yf_close(ticker, period="1d", interval="1m")
-            if hist is None or hist.empty or "Close" not in hist:
-                # fallback para fechamento anterior quando intraday faltar/rate limit
-                hist = self._download_yf_close(ticker, period="5d", interval="1d")
-            if hist is not None and not hist.empty and "Close" in hist:
-                closes, _ = self._extract_close_values(hist)
-                if closes:
-                    p = float(closes[-1])
-                    if math.isfinite(p) and p > 0:
-                        price = p
-
-        if price is not None and math.isfinite(price) and price > 0:
-            self._spot_cache[asset] = (price, now_ts)
-            return price
+        try:
+            price = float(ticker.fast_info['lastPrice'])
+            if math.isfinite(price) and price > 0:
+                return price
+        except Exception:
+            pass
 
         return None

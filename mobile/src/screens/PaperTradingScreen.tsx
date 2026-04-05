@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Picker } from '@react-native-picker/picker';
 import {
   fetchAssetUniverse,
@@ -11,10 +12,9 @@ import {
   paperSell,
   PaperState,
 } from '../services/api';
-import { emitConfigChanged, onConfigChanged } from '../services/events';
+import { onConfigChanged } from '../services/events';
 import { useAppTheme } from '../theme';
 
-const QTY = 10;
 const ASSET_OPTIONS = ['PETR4', 'VALE3', 'ITUB4', 'BTC', 'ETH'];
 
 export function PaperTradingScreen() {
@@ -23,7 +23,15 @@ export function PaperTradingScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [asset, setAsset] = useState('PETR4');
   const [assetOptions, setAssetOptions] = useState<string[]>(ASSET_OPTIONS);
+  const [orderQty, setOrderQty] = useState('1');
   const styles = useMemo(() => createStyles(colors, darkMode), [colors, darkMode]);
+  const upperAsset = asset.toUpperCase();
+  const isCrypto = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'TRX', 'AVAX', 'DOT'].includes(upperAsset);
+  const currency = isCrypto ? 'USD' : 'BRL';
+  const moneyFmt = useMemo(
+    () => new Intl.NumberFormat('pt-BR', { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    [currency]
+  );
 
   const load = async (nextAsset = asset) => {
     const data = await fetchPaperState(nextAsset);
@@ -51,22 +59,42 @@ export function PaperTradingScreen() {
     return off;
   }, [asset]);
 
+  useFocusEffect(
+    React.useCallback(() => {
+      let active = true;
+      const run = async () => {
+        if (!active) return;
+        await load(asset);
+      };
+      void run();
+      const timer = setInterval(() => {
+        void run();
+      }, 5000);
+
+      return () => {
+        active = false;
+        clearInterval(timer);
+      };
+    }, [asset])
+  );
+
   useEffect(() => {
     void load(asset);
-    emitConfigChanged();
   }, [asset]);
 
   const onBuy = async () => {
     if (submitting) return;
-    if (!state?.current_price || state.current_price <= 0) {
-      Alert.alert('Preço indisponível', 'Não foi possível obter preço atual do ativo.');
+    const qty = Number(orderQty.replace(',', '.'));
+    if (!Number.isFinite(qty) || qty <= 0) {
+      Alert.alert('Quantidade inválida', 'Informe uma quantidade maior que zero.');
       return;
     }
     setSubmitting(true);
     try {
-      await paperBuy({ asset, price: state.current_price, quantity: QTY });
+      const fallback = Number(state?.current_price ?? 0) || Number(state?.avg_entry_price ?? 0) || 0;
+      await paperBuy({ asset, price: fallback, quantity: qty });
       await load(asset);
-      Alert.alert('Ordem executada', `BUY ${asset} @ ${state.current_price.toFixed(2)}`);
+      Alert.alert('Ordem executada', `BUY ${asset}`);
     } catch (e: any) {
       Alert.alert('Falha na compra', e?.response?.data?.detail ?? 'Não foi possível executar a compra.');
     } finally {
@@ -76,15 +104,17 @@ export function PaperTradingScreen() {
 
   const onSell = async () => {
     if (submitting) return;
-    if (!state?.current_price || state.current_price <= 0) {
-      Alert.alert('Preço indisponível', 'Não foi possível obter preço atual do ativo.');
+    const qty = Number(orderQty.replace(',', '.'));
+    if (!Number.isFinite(qty) || qty <= 0) {
+      Alert.alert('Quantidade inválida', 'Informe uma quantidade maior que zero.');
       return;
     }
     setSubmitting(true);
     try {
-      await paperSell({ asset, price: state.current_price, quantity: QTY });
+      const fallback = Number(state?.current_price ?? 0) || Number(state?.avg_entry_price ?? 0) || 0;
+      await paperSell({ asset, price: fallback, quantity: qty });
       await load(asset);
-      Alert.alert('Ordem executada', `SELL ${asset} @ ${state.current_price.toFixed(2)}`);
+      Alert.alert('Ordem executada', `SELL ${asset}`);
     } catch (e: any) {
       Alert.alert('Falha na venda', e?.response?.data?.detail ?? 'Não foi possível executar a venda.');
     } finally {
@@ -112,7 +142,10 @@ export function PaperTradingScreen() {
     try {
       const next = await paperResetWallet();
       setState(next);
-      Alert.alert('Carteira resetada', 'Saldo voltou para R$ 10.000,00 e posições foram zeradas.');
+      Alert.alert(
+        'Carteira resetada',
+        `Saldo voltou para ${moneyFmt.format(Number(next.balance ?? 0))} e posições foram zeradas.`
+      );
     } catch (e: any) {
       Alert.alert('Falha ao resetar', e?.response?.data?.detail ?? 'Não foi possível resetar a carteira.');
     } finally {
@@ -121,7 +154,7 @@ export function PaperTradingScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.badge}>PAPER TRADING MODE</Text>
       <Text style={styles.asset}>Ativo em foco</Text>
       <View style={styles.pickerWrap}>
@@ -131,8 +164,18 @@ export function PaperTradingScreen() {
           ))}
         </Picker>
       </View>
-      <Text style={styles.price}>R$ {(state?.current_price ?? 0).toFixed(2)}</Text>
+      <Text style={styles.price}>{moneyFmt.format(Number(state?.current_price ?? 0))}</Text>
       <Text style={styles.quoteStatus}>{state?.price_status ?? 'Preço em Cache'}</Text>
+
+      <Text style={styles.qtyLabel}>Quantidade da Ordem</Text>
+      <TextInput
+        value={orderQty}
+        onChangeText={setOrderQty}
+        keyboardType="numeric"
+        placeholder="1"
+        placeholderTextColor={colors.muted}
+        style={styles.qtyInput}
+      />
 
       <View style={styles.actions}>
         <Pressable
@@ -152,17 +195,25 @@ export function PaperTradingScreen() {
       </View>
 
       <View style={styles.card}>
-        <Text style={styles.line}>Saldo Simulado: R$ {state?.balance?.toFixed(2) ?? '0.00'}</Text>
+        <Text style={styles.line}>Saldo Simulado: {moneyFmt.format(Number(state?.balance ?? 0))}</Text>
         <Text style={styles.line}>
           P/L Flutuante:{' '}
-          <Text style={(state?.floating_pnl ?? 0) >= 0 ? styles.profit : styles.loss}>
-            R$ {(state?.floating_pnl ?? 0).toFixed(2)}
+          <Text
+            style={
+              (state?.floating_pnl ?? 0) > 0
+                ? styles.profit
+                : (state?.floating_pnl ?? 0) < 0
+                ? styles.loss
+                : styles.line
+            }
+          >
+            {moneyFmt.format(Number(state?.floating_pnl ?? 0))}
           </Text>
         </Text>
         <Text style={styles.line}>
-          Posição Aberta: {(state?.open_position_qty ?? 0).toFixed(2)} {state?.open_position_asset ?? '-'}
+          Unidades na Carteira: {(state?.open_position_qty ?? 0).toFixed(2)} {state?.open_position_asset ?? '-'}
         </Text>
-        <Text style={styles.line}>Preço Médio: R$ {(state?.avg_entry_price ?? 0).toFixed(2)}</Text>
+        <Text style={styles.line}>Preço Médio: {moneyFmt.format(Number(state?.avg_entry_price ?? 0))}</Text>
       </View>
 
       <Pressable
@@ -172,6 +223,7 @@ export function PaperTradingScreen() {
       >
         <Text style={styles.closeBtnText}>Fechar Posição</Text>
       </Pressable>
+      <Text style={styles.helpText}>Vende todas as unidades deste ativo a preço de mercado</Text>
 
       <Pressable
         style={[styles.resetBtn, submitting && styles.actionBtnDisabled]}
@@ -182,25 +234,22 @@ export function PaperTradingScreen() {
       </Pressable>
 
       <Text style={styles.subtitle}>Ordens Simuladas Recentes</Text>
-      <FlatList
-        data={state?.recent_orders ?? []}
-        keyExtractor={(item) => String(item.id)}
-        renderItem={({ item }) => (
-          <View style={styles.orderRow}>
-            <Text style={styles.orderMain}>
-              {item.side.toUpperCase()} {item.asset} @ {item.price}
-            </Text>
-            <Text style={styles.orderSub}>{new Date(item.created_at).toLocaleString()}</Text>
-          </View>
-        )}
-      />
-    </View>
+      {(state?.recent_orders ?? []).map((item) => (
+        <View key={String(item.id)} style={styles.orderRow}>
+          <Text style={styles.orderMain}>
+            {item.side.toUpperCase()} {item.asset} @ {moneyFmt.format(Number(item.price ?? 0))}
+          </Text>
+          <Text style={styles.orderSub}>{new Date(item.created_at).toLocaleString()}</Text>
+        </View>
+      ))}
+    </ScrollView>
   );
 }
 
 const createStyles = (colors: ReturnType<typeof useAppTheme>['colors'], darkMode: boolean) =>
   StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg, padding: 16 },
+    content: { paddingBottom: 28 },
     badge: {
       alignSelf: 'center',
       backgroundColor: colors.warning,
@@ -221,6 +270,17 @@ const createStyles = (colors: ReturnType<typeof useAppTheme>['colors'], darkMode
     picker: { color: colors.text },
     price: { color: colors.text, fontSize: 42, textAlign: 'center', marginBottom: 8 },
     quoteStatus: { color: colors.muted, textAlign: 'center', marginBottom: 8 },
+    qtyLabel: { color: colors.muted, marginBottom: 6 },
+    qtyInput: {
+      backgroundColor: colors.card,
+      borderColor: colors.border,
+      borderWidth: 1,
+      borderRadius: 10,
+      color: colors.text,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      marginBottom: 12,
+    },
     actions: { flexDirection: 'row', gap: 10, marginBottom: 14 },
     actionBtn: { flex: 1, alignItems: 'center', padding: 12, borderRadius: 10 },
     actionBtnDisabled: { opacity: 0.65 },
@@ -239,6 +299,7 @@ const createStyles = (colors: ReturnType<typeof useAppTheme>['colors'], darkMode
       marginTop: 10,
     },
     closeBtnText: { color: colors.text, fontWeight: '700' },
+    helpText: { color: colors.muted, fontSize: 12, marginTop: 6, marginBottom: 6 },
     resetBtn: {
       backgroundColor: colors.danger,
       padding: 12,

@@ -1,4 +1,4 @@
-import asyncio
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,9 +7,10 @@ from fastapi import WebSocket, WebSocketDisconnect
 from app.config import API_TITLE, API_VERSION
 from app.crud import ensure_seed_admin
 from app.db import Base, SessionLocal, apply_runtime_migrations, engine
+from app.models import AppSettings, MarketTick
 from app.routers import auth, backtest, dashboard, logs, paper, settings, strategy
-from app.services_bot import bot_automation_loop
-from app.services_stream import manager, market_stream_loop
+from app.services_exchange import ExchangeService
+from app.services_stream import manager
 
 app = FastAPI(title=API_TITLE, version=API_VERSION)
 
@@ -32,30 +33,6 @@ async def on_startup():
     finally:
         db.close()
 
-    app.state.market_stop_event = asyncio.Event()
-    app.state.market_task = asyncio.create_task(market_stream_loop(app.state.market_stop_event))
-
-    app.state.bot_stop_event = asyncio.Event()
-    app.state.bot_task = asyncio.create_task(bot_automation_loop(app.state.bot_stop_event))
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    stop_event = getattr(app.state, "market_stop_event", None)
-    if stop_event:
-        stop_event.set()
-    task = getattr(app.state, "market_task", None)
-    if task:
-        await task
-
-    bot_stop_event = getattr(app.state, "bot_stop_event", None)
-    if bot_stop_event:
-        bot_stop_event.set()
-    bot_task = getattr(app.state, "bot_task", None)
-    if bot_task:
-        await bot_task
-
-
 @app.get("/health")
 def health():
     return {"ok": True}
@@ -68,6 +45,38 @@ async def market_ws(websocket: WebSocket, asset: str):
     try:
         while True:
             await websocket.receive_text()
+
+            db = SessionLocal()
+            try:
+                settings = db.query(AppSettings).first()
+                price = None
+                if settings:
+                    service = ExchangeService(settings)
+                    price = service.fetch_spot_price(asset)
+
+                if not price or float(price) <= 0:
+                    last_tick = (
+                        db.query(MarketTick)
+                        .filter(MarketTick.asset == asset)
+                        .order_by(MarketTick.tick_at.desc())
+                        .first()
+                    )
+                    price = float(last_tick.price) if last_tick and float(last_tick.price) > 0 else 1.0
+
+                db.add(MarketTick(asset=asset, price=float(price), volume=0, tick_at=datetime.now(timezone.utc)))
+                db.commit()
+
+                await manager.broadcast(
+                    asset,
+                    {
+                        "asset": asset,
+                        "price": float(price),
+                        "volume": 0.0,
+                        "tick_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+            finally:
+                db.close()
     except WebSocketDisconnect:
         manager.disconnect(asset, websocket)
     except Exception:

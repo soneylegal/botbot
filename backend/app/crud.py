@@ -1,10 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import math
-import random
 import uuid
-
-import pandas as pd
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
@@ -12,7 +9,6 @@ from app import models, schemas
 from app.security import hash_password, verify_password
 from app.services_backtest import run_ma_backtest
 from app.services_exchange import ExchangeService
-from app.services_stream import manager
 
 
 def mask_secret(value: str | None) -> str | None:
@@ -69,7 +65,9 @@ def get_or_create_status(db: Session) -> models.BotStatus:
 def get_or_create_user_balance(db: Session, user_id: uuid.UUID) -> models.UserBalance:
     balance = db.query(models.UserBalance).filter(models.UserBalance.user_id == user_id).first()
     if not balance:
-        balance = models.UserBalance(user_id=user_id, balance=10000)
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+        user_balance = float(user.balance) if user and user.balance is not None else 10000
+        balance = models.UserBalance(user_id=user_id, balance=user_balance)
         db.add(balance)
         db.commit()
         db.refresh(balance)
@@ -102,7 +100,11 @@ def _append_log(
     details: dict | None = None,
     user_id: uuid.UUID | None = None,
 ):
-    db.add(models.LogEntry(level=level, message=message, details=details, user_id=user_id))
+    try:
+        normalized_level = level if isinstance(level, models.LogLevel) else models.LogLevel(str(level))
+        db.add(models.LogEntry(level=normalized_level, message=message, details=details, user_id=user_id))
+    except Exception:
+        db.rollback()
 
 
 def _sample_points(values: list[float], max_points: int = 100) -> list[float]:
@@ -110,6 +112,14 @@ def _sample_points(values: list[float], max_points: int = 100) -> list[float]:
         return values
     step = (len(values) - 1) / (max_points - 1)
     return [values[round(i * step)] for i in range(max_points)]
+
+
+def _sample_aligned(values: list[float], labels: list[str], max_points: int = 100) -> tuple[list[float], list[str]]:
+    if len(values) <= max_points:
+        return values, labels[: len(values)]
+    step = (len(values) - 1) / (max_points - 1)
+    idxs = [round(i * step) for i in range(max_points)]
+    return [values[i] for i in idxs], [labels[i] if i < len(labels) else "" for i in idxs]
 
 
 def _safe_number(value: float | int | None, default: float = 0.0) -> float:
@@ -149,7 +159,6 @@ def upsert_strategy(
     user_id: uuid.UUID | None = None,
 ) -> models.StrategyConfig:
     strategy = get_or_create_strategy(db)
-    old_asset = strategy.asset
     strategy.asset = payload.asset
     strategy.timeframe = payload.timeframe
     strategy.ma_short_period = payload.ma_short_period
@@ -160,11 +169,6 @@ def upsert_strategy(
     status.current_asset = payload.asset
     status.daily_pnl = Decimal("0.00")
     status.status = "Running"
-
-    if old_asset and old_asset.upper() != payload.asset.upper():
-        manager.request_close_asset(old_asset.upper())
-        ExchangeService.clear_spot_cache(old_asset.upper())
-        ExchangeService.clear_spot_cache(payload.asset.upper())
 
     _append_log(
         db,
@@ -185,15 +189,27 @@ def upsert_strategy(
 
 
 def get_dashboard_data(db: Session, user_id: uuid.UUID) -> schemas.DashboardResponse:
+    try:
+        db.rollback()
+    except Exception:
+        pass
+
     status = get_or_create_status(db)
+    strategy = get_or_create_strategy(db)
     open_positions = (
         db.query(models.UserPosition)
         .filter(models.UserPosition.user_id == user_id, models.UserPosition.quantity > 0)
         .order_by(desc(models.UserPosition.updated_at))
         .all()
     )
-    primary_position = open_positions[0] if open_positions else None
-    asset_to_show = primary_position.asset if primary_position else (status.current_asset or "PETR4")
+    asset_to_show = (strategy.asset or status.current_asset or "PETR4").upper()
+    primary_position = next((p for p in open_positions if p.asset.upper() == asset_to_show), None)
+
+    try:
+        _resolve_spot_price(db, asset_to_show)
+        price_status = "Preço ao Vivo"
+    except Exception:
+        price_status = "Preço em Cache"
 
     ticks = (
         db.query(models.MarketTick)
@@ -203,32 +219,22 @@ def get_dashboard_data(db: Session, user_id: uuid.UUID) -> schemas.DashboardResp
         .all()
     )
 
-    if not ticks:
-        _resolve_spot_price(db, asset_to_show)
-        ticks = (
+    daily_pnl = 0.0
+    status_text = status.status
+    price_status = "Preço em Cache" if not ticks else price_status
+
+    if primary_position and float(primary_position.quantity or 0) > 0:
+        pos_tick = (
             db.query(models.MarketTick)
             .filter(models.MarketTick.asset == asset_to_show)
             .order_by(desc(models.MarketTick.tick_at))
-            .limit(60)
-            .all()
+            .first()
         )
-
-    daily_pnl = 0.0
-    status_text = status.status
-    price_status = "Preço em Cache"
-
-    _, active_source = _resolve_spot_price(db, asset_to_show)
-    price_status = active_source
-
-    if open_positions:
-        for pos in open_positions:
-            price, source = _resolve_spot_price(db, pos.asset)
-            qty = float(pos.quantity or 0)
-            entry = float(pos.avg_entry_price or 0)
-            if price > 0 and qty > 0 and entry > 0:
-                daily_pnl += (price - entry) * qty
-            if source == "Preço ao Vivo":
-                price_status = source
+        price = _safe_number(float(pos_tick.price), 0.0) if pos_tick else 0.0
+        qty = float(primary_position.quantity or 0)
+        entry = float(primary_position.avg_entry_price or 0)
+        if price > 0 and qty > 0 and entry > 0:
+            daily_pnl = (price - entry) * qty
         status_text = "Running (posição aberta)" if status.status == "Running" else status.status
 
     chart = [
@@ -239,9 +245,6 @@ def get_dashboard_data(db: Session, user_id: uuid.UUID) -> schemas.DashboardResp
         for t in reversed(ticks)
         if _safe_number(float(t.price), 0.0) > 0
     ]
-
-    if not chart:
-        chart = [schemas.TickPoint(t=datetime.now(timezone.utc).isoformat(), p=0.0)]
 
     return schemas.DashboardResponse(
         status=status_text,
@@ -270,6 +273,14 @@ def get_latest_backtest(db: Session) -> schemas.BacktestResponse:
         db.commit()
         db.refresh(item)
 
+    sampled_curve = [_round2(v) for v in _sample_points([float(v) for v in item.equity_curve], 100)]
+    synthetic_dates = []
+    if sampled_curve:
+        now = datetime.now(timezone.utc)
+        synthetic_dates = [
+            (now - timedelta(days=(len(sampled_curve) - 1 - i))).date().isoformat() for i in range(len(sampled_curve))
+        ]
+
     return schemas.BacktestResponse(
         period_label=item.period_label,
         metrics=schemas.BacktestMetrics(
@@ -278,7 +289,8 @@ def get_latest_backtest(db: Session) -> schemas.BacktestResponse:
             max_drawdown=_round2(item.max_drawdown),
             sharpe_ratio=_round2(item.sharpe_ratio),
         ),
-        equity_curve=[_round2(v) for v in _sample_points([float(v) for v in item.equity_curve], 100)],
+        equity_curve=sampled_curve,
+        equity_dates=synthetic_dates,
     )
 
 
@@ -291,22 +303,57 @@ def run_backtest(
     strategy = get_or_create_strategy(db)
     selected_asset = (asset or strategy.asset).upper()
     days = _period_days(period_label)
-    settings = get_or_create_settings(db)
-    exchange_service = ExchangeService(settings)
-    prices, times = exchange_service.fetch_historical_closes(selected_asset, days=days)
+    min_points = max(strategy.ma_long_period + 5, 40)
 
-    if len(prices) < max(strategy.ma_long_period + 5, 40):
-        now = datetime.now(timezone.utc)
-        base_by_asset = {"BTC": 64000.0, "ETH": 3200.0, "PETR4": 25.0}
-        base = base_by_asset.get(selected_asset, 25.0)
-        points = min(1200, max(120, days * 6))
-        prices = [
-            max(0.1, base + (i * (base * 0.0002)) + random.uniform(-(base * 0.004), (base * 0.004)))
-            for i in range(points)
-        ]
-        times = [pd.Timestamp(now - timedelta(minutes=points - i)) for i in range(points)]
+    recent_ticks = (
+        db.query(models.MarketTick)
+        .filter(models.MarketTick.asset == selected_asset)
+        .order_by(models.MarketTick.tick_at.asc())
+        .limit(2000)
+        .all()
+    )
+    prices = [_safe_number(float(t.price), 0.0) for t in recent_ticks if _safe_number(float(t.price), 0.0) > 0]
+    times = [t.tick_at if t.tick_at.tzinfo else t.tick_at.replace(tzinfo=timezone.utc) for t in recent_ticks if _safe_number(float(t.price), 0.0) > 0]
 
-    result = run_ma_backtest(prices, times, strategy.ma_short_period, strategy.ma_long_period)
+    if len(prices) < min_points and prices:
+        base = prices[-1]
+        now_utc = datetime.now(timezone.utc)
+        generated_prices: list[float] = []
+        generated_times: list[datetime] = []
+        total = max(min_points + 20, 120)
+        for i in range(total):
+            drift = 1.0 + (0.003 * math.sin(i / 6.0))
+            generated_prices.append(max(0.1, base * drift))
+            generated_times.append(now_utc - timedelta(hours=(total - i)))
+        prices = generated_prices
+        times = generated_times
+
+    if len(prices) < min_points:
+        settings = get_or_create_settings(db)
+        exchange_service = ExchangeService(settings)
+        effective_days = max(days, 180) if exchange_service._is_crypto_asset(selected_asset) else days
+        prices, times = exchange_service.fetch_historical_closes(selected_asset, days=effective_days)
+
+    if len(prices) < min_points:
+        raise ValueError("Dados insuficientes para este período")
+
+    initial_capital = 10000.0
+    if user_id:
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+        if user and user.balance is not None and float(user.balance) > 0:
+            initial_capital = float(user.balance)
+        else:
+            settings = get_or_create_settings(db)
+            if settings.simulated_balance is not None and float(settings.simulated_balance) > 0:
+                initial_capital = float(settings.simulated_balance)
+
+    result = run_ma_backtest(
+        prices,
+        times,
+        strategy.ma_short_period,
+        strategy.ma_long_period,
+        initial_capital=initial_capital,
+    )
 
     row = models.BacktestResult(
         strategy_config_id=strategy.id,
@@ -335,6 +382,12 @@ def run_backtest(
     db.commit()
     db.refresh(row)
 
+    sampled_curve_raw, sampled_dates = _sample_aligned(
+        [float(v) for v in result["equity_curve"]],
+        [str(ts) for ts in result.get("equity_timestamps", [])],
+        100,
+    )
+
     return schemas.BacktestResponse(
         period_label=row.period_label,
         metrics=schemas.BacktestMetrics(
@@ -343,7 +396,8 @@ def run_backtest(
             max_drawdown=_round2(row.max_drawdown),
             sharpe_ratio=_round2(row.sharpe_ratio),
         ),
-        equity_curve=[_round2(v) for v in _sample_points([float(v) for v in row.equity_curve], 100)],
+        equity_curve=[_round2(v) for v in sampled_curve_raw],
+        equity_dates=sampled_dates,
     )
 
 
@@ -376,6 +430,7 @@ def get_or_create_settings(db: Session) -> models.AppSettings:
             dark_mode=True,
             exchange_name="binance",
             trade_mode=models.TradeMode.paper,
+            simulated_balance=10000,
         )
         db.add(settings)
         db.commit()
@@ -393,6 +448,18 @@ def update_settings(
     settings.dark_mode = payload.dark_mode
     settings.exchange_name = payload.exchange_name
     settings.trade_mode = models.TradeMode(payload.trade_mode.value)
+    if payload.simulated_balance and float(payload.simulated_balance) > 0:
+        settings.simulated_balance = Decimal(str(payload.simulated_balance))
+        if user_id:
+            balance_row = db.query(models.UserBalance).filter(models.UserBalance.user_id == user_id).first()
+            if not balance_row:
+                balance_row = models.UserBalance(user_id=user_id, balance=Decimal(str(payload.simulated_balance)))
+                db.add(balance_row)
+                db.flush()
+            balance_row.balance = Decimal(str(payload.simulated_balance))
+            user = db.query(models.User).filter(models.User.id == user_id).first()
+            if user:
+                user.balance = Decimal(str(payload.simulated_balance))
     if payload.api_key:
         settings.api_key = payload.api_key
         settings.api_key_masked = mask_secret(payload.api_key)
@@ -409,6 +476,7 @@ def update_settings(
             "trade_mode": payload.trade_mode.value,
             "paper_trading": payload.paper_trading,
             "dark_mode": payload.dark_mode,
+            "simulated_balance": float(settings.simulated_balance),
         },
         user_id=user_id,
     )
@@ -497,6 +565,10 @@ def create_paper_order(
         if Decimal(position_row.quantity) == 0:
             position_row.avg_entry_price = Decimal("0")
 
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if user:
+        user.balance = balance_row.balance
+
     legacy_account = db.query(models.PaperAccount).first()
     if not legacy_account:
         legacy_account = models.PaperAccount(balance=10000, open_position_asset=None, open_position_qty=0)
@@ -542,6 +614,24 @@ def create_live_or_paper_order(
     payload: schemas.PaperOrderIn,
     user_id: uuid.UUID,
 ) -> models.PaperOrder:
+    if float(payload.price or 0) <= 0:
+        try:
+            fallback_price, _ = _resolve_spot_price(db, payload.asset)
+        except ValueError:
+            fallback_price = 0.0
+        if fallback_price > 0:
+            payload = schemas.PaperOrderIn(asset=payload.asset, price=float(fallback_price), quantity=payload.quantity)
+        else:
+            # último recurso para não travar a interface; usa último fechamento local
+            last_tick = (
+                db.query(models.MarketTick)
+                .filter(models.MarketTick.asset == payload.asset.upper())
+                .order_by(models.MarketTick.tick_at.desc())
+                .first()
+            )
+            if last_tick and float(last_tick.price or 0) > 0:
+                payload = schemas.PaperOrderIn(asset=payload.asset, price=float(last_tick.price), quantity=payload.quantity)
+
     settings = get_or_create_settings(db)
     if settings.trade_mode == models.TradeMode.live:
         symbol = f"{payload.asset}/USDT"
@@ -587,6 +677,7 @@ def _resolve_spot_price(db: Session, asset: str) -> tuple[float, str]:
     )
 
     last_saved_price = _safe_number(float(latest_tick.price), 0.0) if latest_tick else None
+    last_tick_age_seconds: float | None = None
     if latest_tick:
         tick_at = latest_tick.tick_at
         if tick_at.tzinfo is None:
@@ -594,7 +685,8 @@ def _resolve_spot_price(db: Session, asset: str) -> tuple[float, str]:
         else:
             tick_at = tick_at.astimezone(timezone.utc)
         now_utc = datetime.now(timezone.utc)
-        if (now_utc - tick_at).total_seconds() <= 60:
+        last_tick_age_seconds = (now_utc - tick_at).total_seconds()
+        if last_tick_age_seconds <= 60:
             return _safe_number(float(latest_tick.price), 0.0), "Preço em Cache"
 
     try:
@@ -623,7 +715,8 @@ def _resolve_spot_price(db: Session, asset: str) -> tuple[float, str]:
             # guarda contra saltos abruptos por erro de provider (escala errada)
             if last_saved_price and last_saved_price > 0:
                 deviation = abs(safe_price - last_saved_price) / last_saved_price
-                if deviation > 0.20:
+                # só trava por desvio alto quando o tick local ainda está fresco
+                if deviation > 0.20 and (last_tick_age_seconds is not None and last_tick_age_seconds <= 900):
                     _append_log(
                         db,
                         models.LogLevel.warning,
@@ -638,6 +731,14 @@ def _resolve_spot_price(db: Session, asset: str) -> tuple[float, str]:
                     db.commit()
                     return _round2(last_saved_price), "Preço em Cache"
             db.add(models.MarketTick(asset=asset, price=price, volume=0, tick_at=datetime.now(timezone.utc)))
+            # limpa ticks defasados que distorcem gráfico/sincronia
+            if not service._is_crypto_asset(asset):
+                lower = safe_price * 0.5
+                upper = safe_price * 1.5
+                db.query(models.MarketTick).filter(
+                    models.MarketTick.asset == asset,
+                    (models.MarketTick.price < lower) | (models.MarketTick.price > upper),
+                ).delete(synchronize_session=False)
             _append_log(
                 db,
                 models.LogLevel.info,
@@ -647,13 +748,13 @@ def _resolve_spot_price(db: Session, asset: str) -> tuple[float, str]:
             db.commit()
             return _round2(safe_price), "Preço ao Vivo"
     except Exception:
-        # fallback robusto: retorna o último preço conhecido local
-        pass
+        db.rollback()
+        # fallback robusto: nunca cruza ativo entre caches
 
     if last_saved_price and last_saved_price > 0:
         return _round2(last_saved_price), "Preço em Cache"
 
-    return 0.0, "Preço em Cache"
+    raise ValueError(f"Sem cache local para o ativo {asset}. Aguarde nova cotação deste ativo.")
 
 
 def get_paper_state(db: Session, user_id: uuid.UUID, focus_asset: str | None = None) -> schemas.PaperStateResponse:
@@ -662,11 +763,24 @@ def get_paper_state(db: Session, user_id: uuid.UUID, focus_asset: str | None = N
     asset = (focus_asset or (open_position.asset if open_position else None) or "PETR4").upper()
     if focus_asset:
         ExchangeService.clear_spot_cache(asset)
-    current_price, price_status = _resolve_spot_price(db, asset)
+    try:
+        current_price, price_status = _resolve_spot_price(db, asset)
+    except ValueError:
+        current_price, price_status = 0.0, "Sem cache para o ativo"
 
     floating_pnl = 0.0
-    if open_position and open_position.asset == asset and current_price and float(open_position.quantity) > 0:
-        floating_pnl = (current_price - float(open_position.avg_entry_price or 0)) * float(open_position.quantity)
+    if open_position and float(open_position.quantity) > 0:
+        position_asset = open_position.asset.upper()
+        if position_asset == asset:
+            position_price = current_price
+        else:
+            try:
+                position_price, _ = _resolve_spot_price(db, position_asset)
+            except Exception:
+                db.rollback()
+                position_price = 0.0
+        if position_price and position_price > 0:
+            floating_pnl = (position_price - float(open_position.avg_entry_price or 0)) * float(open_position.quantity)
 
     orders = (
         db.query(models.PaperOrder)
@@ -761,7 +875,9 @@ def close_open_position(db: Session, user_id: uuid.UUID) -> models.PaperOrder:
         raise ValueError("Erro de banco ao fechar posição") from exc
 
 
-def reset_paper_wallet(db: Session, user_id: uuid.UUID, initial_balance: float = 10000.0) -> schemas.PaperStateResponse:
+def reset_paper_wallet(db: Session, user_id: uuid.UUID, initial_balance: float | None = None) -> schemas.PaperStateResponse:
+    settings = get_or_create_settings(db)
+    target_balance = float(initial_balance) if (initial_balance is not None and float(initial_balance) > 0) else float(settings.simulated_balance or 10000)
     balance_row = (
         db.query(models.UserBalance)
         .filter(models.UserBalance.user_id == user_id)
@@ -769,11 +885,15 @@ def reset_paper_wallet(db: Session, user_id: uuid.UUID, initial_balance: float =
         .first()
     )
     if not balance_row:
-        balance_row = models.UserBalance(user_id=user_id, balance=Decimal(str(initial_balance)))
+        balance_row = models.UserBalance(user_id=user_id, balance=Decimal(str(target_balance)))
         db.add(balance_row)
         db.flush()
     else:
-        balance_row.balance = Decimal(str(initial_balance))
+        balance_row.balance = Decimal(str(target_balance))
+
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if user:
+        user.balance = Decimal(str(target_balance))
 
     db.query(models.UserPosition).filter(models.UserPosition.user_id == user_id).delete(synchronize_session=False)
     db.query(models.PaperOrder).filter(
@@ -783,10 +903,10 @@ def reset_paper_wallet(db: Session, user_id: uuid.UUID, initial_balance: float =
 
     legacy_account = db.query(models.PaperAccount).first()
     if not legacy_account:
-        legacy_account = models.PaperAccount(balance=Decimal(str(initial_balance)), open_position_asset=None, open_position_qty=0)
+        legacy_account = models.PaperAccount(balance=Decimal(str(target_balance)), open_position_asset=None, open_position_qty=0)
         db.add(legacy_account)
     else:
-        legacy_account.balance = Decimal(str(initial_balance))
+        legacy_account.balance = Decimal(str(target_balance))
         legacy_account.open_position_asset = None
         legacy_account.open_position_qty = Decimal("0")
 
@@ -794,7 +914,7 @@ def reset_paper_wallet(db: Session, user_id: uuid.UUID, initial_balance: float =
         db,
         models.LogLevel.warning,
         "Carteira paper resetada manualmente",
-        {"initial_balance": initial_balance},
+        {"initial_balance": target_balance},
         user_id=user_id,
     )
     db.commit()

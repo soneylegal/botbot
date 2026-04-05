@@ -49,7 +49,11 @@ async def bot_automation_loop(stop_event: asyncio.Event):
             strategy = get_or_create_strategy(db)
             settings = get_or_create_settings(db)
             service = ExchangeService(settings)
-            closes, times = service.fetch_historical_closes(strategy.asset, days=2)
+            try:
+                closes, times = service.fetch_historical_closes(strategy.asset, days=2)
+            except ValueError:
+                await asyncio.sleep(BOT_AUTOMATION_INTERVAL_SECONDS)
+                continue
             prev_sig, curr_sig, ts = _latest_signal(
                 strategy.asset,
                 strategy.ma_short_period,

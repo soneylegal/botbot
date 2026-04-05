@@ -38,6 +38,7 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    balance: Mapped[float] = mapped_column(Numeric(14, 2), default=10000)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
@@ -95,7 +96,16 @@ class LogEntry(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)
-    level: Mapped[LogLevel] = mapped_column(Enum(LogLevel), nullable=False)
+    level: Mapped[LogLevel] = mapped_column(
+        Enum(
+            LogLevel,
+            name="log_level",
+            native_enum=True,
+            create_type=False,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
     message: Mapped[str] = mapped_column(Text, nullable=False)
     details: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -113,6 +123,7 @@ class AppSettings(Base):
     trade_mode: Mapped[TradeMode] = mapped_column(Enum(TradeMode), default=TradeMode.paper)
     paper_trading: Mapped[bool] = mapped_column(Boolean, default=True)
     dark_mode: Mapped[bool] = mapped_column(Boolean, default=True)
+    simulated_balance: Mapped[float] = mapped_column(Numeric(14, 2), default=10000)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 

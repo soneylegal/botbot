@@ -74,8 +74,8 @@ def _next_price(db: Session, asset: str) -> float:
     live_price = None
     if settings:
         service = ExchangeService(settings)
-        symbol = f"{asset}/USDT"
-        live_price = service.fetch_last_price(symbol)
+        # usa fonte apropriada por ativo para evitar mistura BRL/USD
+        live_price = service.fetch_spot_price(asset, cache_ttl_seconds=10)
 
     if live_price and live_price > 0:
         return live_price

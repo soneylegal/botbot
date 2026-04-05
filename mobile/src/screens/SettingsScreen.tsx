@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { fetchSettings, paperResetWallet, saveSettings, testConnection } from '../services/api';
 import { emitConfigChanged } from '../services/events';
@@ -15,23 +15,35 @@ export function SettingsScreen() {
   const [darkMode, setDarkModeLocal] = useState(true);
   const [testing, setTesting] = useState(false);
   const [initialSimBalance, setInitialSimBalance] = useState('10000');
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
-      const data = await fetchSettings();
-      setApiKey(data.api_key_masked ?? '');
-      setApiSecret(data.api_secret_masked ?? '');
-      setExchangeName(data.exchange_name ?? 'binance');
-      setTradeMode(data.trade_mode ?? 'paper');
-      setPaperTrading(data.paper_trading);
-      setDarkModeLocal(Boolean(data.dark_mode));
-      setGlobalDarkMode(Boolean(data.dark_mode));
+      try {
+        const data = await fetchSettings();
+        if (!data || typeof data !== 'object') return;
+        if (typeof data.api_key_masked === 'string') setApiKey(data.api_key_masked);
+        if (typeof data.api_secret_masked === 'string') setApiSecret(data.api_secret_masked);
+        if (typeof data.exchange_name === 'string' && data.exchange_name.length > 0) setExchangeName(data.exchange_name);
+        if (data.trade_mode === 'paper' || data.trade_mode === 'live') setTradeMode(data.trade_mode);
+        if (typeof data.paper_trading === 'boolean') setPaperTrading(data.paper_trading);
+        if (typeof data.dark_mode === 'boolean') {
+          setDarkModeLocal(data.dark_mode);
+          setGlobalDarkMode(data.dark_mode);
+        }
+        if (typeof data.simulated_balance === 'number' && Number.isFinite(data.simulated_balance) && data.simulated_balance > 0) {
+          setInitialSimBalance(String(Number(data.simulated_balance)));
+        }
+      } finally {
+        setIsLoading(false);
+      }
     })();
   }, [setGlobalDarkMode]);
 
   const onSaveAndTest = async () => {
     setTesting(true);
     try {
+      const parsedBalance = Number(initialSimBalance.replace(',', '.'));
       await saveSettings({
         api_key: apiKey.includes('*') ? undefined : apiKey,
         api_secret: apiSecret.includes('*') ? undefined : apiSecret,
@@ -39,6 +51,7 @@ export function SettingsScreen() {
         trade_mode: tradeMode,
         paper_trading: paperTrading,
         dark_mode: darkMode,
+        simulated_balance: Number.isFinite(parsedBalance) && parsedBalance > 0 ? parsedBalance : undefined,
       });
       emitConfigChanged();
       const res = await testConnection();
@@ -64,7 +77,9 @@ export function SettingsScreen() {
     }
     setTesting(true);
     try {
-      await paperResetWallet(parsed);
+      const next = await paperResetWallet(parsed);
+      setInitialSimBalance(String(Number(next.balance ?? parsed)));
+      emitConfigChanged();
       Alert.alert('Carteira resetada', `Novo saldo inicial aplicado: R$ ${parsed.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
     } catch (e: any) {
       const summary = e?.response?.data?.detail ?? e?.message ?? 'Erro inesperado';
@@ -76,8 +91,16 @@ export function SettingsScreen() {
 
   const styles = useMemo(() => createStyles(colors), [colors]);
 
+  if (isLoading) {
+    return (
+      <View style={styles.loaderWrap}>
+        <ActivityIndicator color={colors.primary} />
+      </View>
+    );
+  }
+
   return (
-    <View style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.label}>API Key</Text>
       <TextInput
         value={apiKey}
@@ -153,13 +176,15 @@ export function SettingsScreen() {
           }}
         />
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
 const createStyles = (colors: ReturnType<typeof useAppTheme>['colors']) =>
   StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.bg, padding: 16 },
+    loaderWrap: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' },
+    content: { paddingBottom: 28 },
     label: { color: colors.text, marginBottom: 8, marginTop: 10 },
     input: {
       backgroundColor: colors.card,

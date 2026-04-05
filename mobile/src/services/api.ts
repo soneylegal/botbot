@@ -1,4 +1,5 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
 
@@ -12,6 +13,27 @@ let accessToken = '';
 let refreshToken = '';
 let isRefreshing = false;
 let refreshSubscribers: Array<(token: string) => void> = [];
+const UI_CACHE_PREFIX = 'botbot:ui:';
+
+async function clearVisualCache() {
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    const visualKeys = keys.filter((k) => k.startsWith(UI_CACHE_PREFIX));
+    if (visualKeys.length > 0) {
+      await Promise.all(visualKeys.map((k) => AsyncStorage.removeItem(k)));
+    }
+  } catch {
+    // non-blocking
+  }
+}
+
+export async function clearVisualCacheOnColdStart() {
+  await clearVisualCache();
+}
+
+export async function clearVisualCacheOnTokenRefresh() {
+  await clearVisualCache();
+}
 
 type RetryableRequestConfig = InternalAxiosRequestConfig & { _retry?: boolean };
 
@@ -40,15 +62,25 @@ export async function registerUser(email: string, password: string) {
 }
 
 api.interceptors.request.use((config) => {
+  config.headers = config.headers ?? {};
   if (accessToken) {
     config.headers.Authorization = `Bearer ${accessToken}`;
   }
+  console.log('[API][REQ]', config.method?.toUpperCase(), config.url, {
+    hasToken: Boolean(accessToken),
+    hasRefresh: Boolean(refreshToken),
+  });
   return config;
 });
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    console.log('[API][RES]', response.status, response.config?.url, response.data);
+    return response;
+  },
   async (error: AxiosError) => {
+    const errPayload = error.response?.data ?? error.message;
+    console.log('[API][ERR]', error.response?.status ?? 'NETWORK', error.config?.url, errPayload);
     const original = error.config as RetryableRequestConfig | undefined;
     if (!original) {
       throw error;
@@ -78,6 +110,7 @@ api.interceptors.response.use(
         refresh_token: refreshToken,
       });
       setAuthTokens(data);
+      await clearVisualCacheOnTokenRefresh();
       refreshSubscribers.forEach((cb) => cb(data.access_token));
       refreshSubscribers = [];
       original._retry = true;
@@ -131,6 +164,7 @@ export type BacktestData = {
     sharpe_ratio: number;
   };
   equity_curve: number[];
+  equity_dates?: string[];
 };
 
 export type LogRow = {
@@ -147,6 +181,7 @@ export type SettingsData = {
   trade_mode: 'paper' | 'live';
   paper_trading: boolean;
   dark_mode: boolean;
+  simulated_balance: number;
 };
 
 export type PaperState = {
@@ -216,6 +251,7 @@ export async function saveSettings(payload: {
   trade_mode: 'paper' | 'live';
   paper_trading: boolean;
   dark_mode: boolean;
+  simulated_balance?: number;
 }) {
   const { data } = await api.put<SettingsData>('/settings', payload);
   return data;
