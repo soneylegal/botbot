@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useCallback, useMemo } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 
@@ -21,6 +21,7 @@ type Props = {
   maLong?: IndicatorPoint[];
   height?: number;
   darkMode?: boolean;
+  onInteractionChange?: (isInteracting: boolean) => void;
 };
 
 function toUnixSeconds(value: string) {
@@ -68,6 +69,7 @@ export function TradingViewCandles({
   maLong = [],
   height = 280,
   darkMode = false,
+  onInteractionChange,
 }: Props) {
   const html = useMemo(() => {
     const candleData = sanitizeCandles(candles);
@@ -147,8 +149,17 @@ export function TradingViewCandles({
             grid: { vertLines: { color: '${grid}' }, horzLines: { color: '${grid}' } },
             rightPriceScale: { borderColor: '${grid}', autoScale: true },
             timeScale: { borderColor: '${grid}', timeVisible: true, secondsVisible: false, rightOffset: 2 },
-            handleScroll: { vertTouchDrag: false },
-            handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+            handleScroll: {
+              pressedMouseMove: true,
+              horzTouchDrag: true,
+              vertTouchDrag: true,
+              mouseWheel: true,
+            },
+            handleScale: {
+              axisPressedMouseMove: true,
+              mouseWheel: true,
+              pinch: true,
+            },
             localization: { locale: 'pt-BR' },
           });
 
@@ -167,16 +178,57 @@ export function TradingViewCandles({
           shortSeries.setData(maShort);
           longSeries.setData(maLong);
 
+          function send(msg) {
+            if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+              window.ReactNativeWebView.postMessage(msg);
+            }
+          }
+
+          let touching = false;
+          function begin() {
+            if (touching) return;
+            touching = true;
+            send('gesture:start');
+          }
+
+          function end() {
+            if (!touching) return;
+            touching = false;
+            send('gesture:end');
+          }
+
+          const opts = { passive: false };
+          chartEl.addEventListener('touchstart', begin, opts);
+          chartEl.addEventListener('touchmove', begin, opts);
+          chartEl.addEventListener('touchend', end, opts);
+          chartEl.addEventListener('touchcancel', end, opts);
+          chartEl.addEventListener('pointerdown', begin, opts);
+          chartEl.addEventListener('pointerup', end, opts);
+          chartEl.addEventListener('pointercancel', end, opts);
+
           chart.timeScale().fitContent();
+          send('chart:ready');
           window.addEventListener('resize', () => chart.timeScale().fitContent());
         }
       } catch (e) {
+        if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+          window.ReactNativeWebView.postMessage('chart:error:' + (e && e.message ? e.message : 'unknown'));
+        }
         fail('Erro ao renderizar gráfico: ' + (e && e.message ? e.message : 'desconhecido'));
       }
     </script>
   </body>
 </html>`;
   }, [candles, darkMode, maLong, maShort]);
+
+  const handleMessage = useCallback(
+    (event: any) => {
+      const msg = String(event?.nativeEvent?.data ?? '');
+      if (msg === 'gesture:start') onInteractionChange?.(true);
+      if (msg === 'gesture:end') onInteractionChange?.(false);
+    },
+    [onInteractionChange]
+  );
 
   return (
     <View style={[styles.wrap, { height }]}> 
@@ -186,7 +238,12 @@ export function TradingViewCandles({
         javaScriptEnabled
         domStorageEnabled
         style={styles.webview}
+        onMessage={handleMessage}
         scrollEnabled={false}
+        nestedScrollEnabled
+        overScrollMode="never"
+        bounces={false}
+        androidLayerType="hardware"
       />
     </View>
   );

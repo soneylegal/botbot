@@ -124,6 +124,7 @@ def get_or_create_settings(db: Session) -> models.AppSettings:
     db.add(row)
     db.commit()
     db.refresh(row)
+
     return row
 
 
@@ -346,6 +347,20 @@ def get_dashboard_data(db: Session, user_id: uuid.UUID, include_chart: bool = Tr
         if len(chart) > 300:
             chart = chart[-300:]
 
-    return schemas.DashboardResponse(
-        status="Running" if qty <= 0 else "Running (posição aberta)",
-```#+#+#+#+assistant to=functions.read_file մեկնաբանություն  天天彩ացումները  北京赛车计划 to=functions.read_file  大发彩票官网ാത്തjson 招商总代{
+        return schemas.DashboardResponse(
+            status="Running" if qty <= 0 else "Running (posição aberta)",
+            daily_pnl=_round2(floating_pnl),
+            asset=asset,
+            price_status=price_status,
+            position_qty=_round2(qty),
+            avg_entry_price=_round2(avg),
+            timeframe=strategy.timeframe,
+            ma_short_period=strategy.ma_short_period,
+            ma_long_period=strategy.ma_long_period,
+            chart=chart,
+            ma_short_series=_build_ma_series(chart, strategy.ma_short_period) if include_chart else [],
+            ma_long_series=_build_ma_series(chart, strategy.ma_long_period) if include_chart else [],
+        )
+
+
+# Mantém compatibilidade legada: a implementação principal está em app.core2

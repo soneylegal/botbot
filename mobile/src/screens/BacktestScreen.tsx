@@ -15,6 +15,8 @@ export function BacktestScreen() {
   const [asset, setAsset] = useState('PETR4');
   const [period, setPeriod] = useState<PeriodCode>('6mo');
   const [running, setRunning] = useState(false);
+  const [loadingData, setLoadingData] = useState(true);
+  const [chartInteracting, setChartInteracting] = useState(false);
   const [assets, setAssets] = useState<string[]>(['PETR4', 'BTC', 'ETH']);
   const { strategy } = useStrategyContext();
 
@@ -22,17 +24,27 @@ export function BacktestScreen() {
 
   useEffect(() => {
     (async () => {
-      const [res, universe] = await Promise.all([fetchBacktest(), fetchAssetUniverse()]);
-      setData(res);
-      if (universe.all.length > 0) setAssets(universe.all);
+      try {
+        setLoadingData(true);
+        const [res, universe] = await Promise.all([fetchBacktest(), fetchAssetUniverse()]);
+        setData(res);
+        if (universe.all.length > 0) setAssets(universe.all);
+      } finally {
+        setLoadingData(false);
+      }
     })();
   }, []);
 
   useEffect(() => {
     const off = onConfigChanged(() => {
       (async () => {
-        const res = await fetchBacktest();
-        setData(res);
+        try {
+          setLoadingData(true);
+          const res = await fetchBacktest();
+          setData(res);
+        } finally {
+          setLoadingData(false);
+        }
       })();
     });
     return off;
@@ -64,7 +76,7 @@ export function BacktestScreen() {
     [currency]
   );
 
-  if (!data) {
+  if (!data || loadingData) {
     return (
       <View style={[styles.center, { flex: 1 }]}>
         <ActivityIndicator color={colors.primary} />
@@ -78,6 +90,7 @@ export function BacktestScreen() {
         style={{ flex: 1 }} 
         contentContainerStyle={{ paddingBottom: 40, flexGrow: 1, padding: 12 }}
         showsVerticalScrollIndicator={false}
+        scrollEnabled={!chartInteracting}
       >
         <Text style={styles.explain}>
           Simulação do cruzamento de médias (MA Curta vs MA Longa) no histórico do ativo para avaliar a rentabilidade da estratégia.
@@ -112,12 +125,20 @@ export function BacktestScreen() {
             maLong={data?.ma_long_series ?? []}
             darkMode={darkMode}
             height={300}
+            onInteractionChange={setChartInteracting}
           />
         ) : (
           <Text style={{ textAlign: 'center', marginVertical: 20, color: colors.muted }}>
             Gráfico temporariamente indisponível.
           </Text>
         )}
+
+        {running ? (
+          <View style={styles.loadingInline}>
+            <ActivityIndicator color={colors.primary} size="small" />
+            <Text style={styles.loadingText}>Processando backtest…</Text>
+          </View>
+        ) : null}
 
         <Text style={styles.subtleLine}>Capital final: {moneyFmt.format(Number(data.equity_curve?.at(-1) ?? 0))}</Text>
 
@@ -184,4 +205,6 @@ const createStyles = (colors: ReturnType<typeof useAppTheme>['colors']) =>
     subtleLine: { color: colors.muted, marginTop: 10 },
     insightBox: { backgroundColor: colors.cardSoft, padding: 12, borderRadius: 10, marginTop: 10, borderWidth: 1, borderColor: colors.primary + '40' },
     insightText: { color: colors.text, fontSize: 14, lineHeight: 22 },
+    loadingInline: { marginTop: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
+    loadingText: { color: colors.muted, fontSize: 12, marginLeft: 8 },
   });

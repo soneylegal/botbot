@@ -26,6 +26,10 @@ def _round2(value) -> float:
     return round(_safe_float(value), 2)
 
 
+def _round4(value) -> float:
+    return round(_safe_float(value), 4)
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -171,6 +175,141 @@ def _build_ma_series(candles: list[schemas.CandlePoint], period: int | None) -> 
     return out
 
 
+_TF_TO_SECONDS = {
+    "1M": 60,
+    "5M": 300,
+    "15M": 900,
+    "30M": 1800,
+    "1H": 3600,
+    "4H": 14400,
+    "1D": 86400,
+}
+
+
+def _canonical_timeframe(value: str | None) -> str:
+    raw = (value or "5M").strip().upper()
+    aliases = {
+        "1MIN": "1M",
+        "5MIN": "5M",
+        "15MIN": "15M",
+        "30MIN": "30M",
+        "60M": "1H",
+        "1HR": "1H",
+        "1HOUR": "1H",
+    }
+    return aliases.get(raw, raw if raw in _TF_TO_SECONDS else "5M")
+
+
+def _timeframe_seconds(value: str | None) -> int:
+    return _TF_TO_SECONDS.get(_canonical_timeframe(value), 300)
+
+
+def _build_timeframe_candidates(preferred: str | None) -> list[str]:
+    tf = _canonical_timeframe(preferred)
+    matrix = {
+        "1M": ["1M", "5M", "15M", "30M", "1H", "4H", "1D"],
+        "5M": ["5M", "15M", "30M", "1H", "4H", "1D", "1M"],
+        "15M": ["15M", "30M", "1H", "4H", "1D", "5M"],
+        "30M": ["30M", "1H", "4H", "1D", "15M", "5M"],
+        "1H": ["1H", "4H", "1D", "30M", "15M", "5M"],
+        "4H": ["4H", "1D", "1H", "30M", "15M"],
+        "1D": ["1D", "4H", "1H"],
+    }
+    return matrix.get(tf, ["5M", "15M", "1H", "4H", "1D"])
+
+
+def _normalize_candles(
+    candles: list[schemas.CandlePoint],
+    timeframe: str,
+    target_points: int,
+) -> list[schemas.CandlePoint]:
+    if not candles:
+        return []
+
+    step = _timeframe_seconds(timeframe)
+    dedup: dict[int, schemas.CandlePoint] = {}
+    for c in candles:
+        try:
+            ts = datetime.fromisoformat(c.time.replace("Z", "+00:00"))
+            ts = ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts.astimezone(timezone.utc)
+            bucket = int(ts.timestamp()) // step * step
+            if c.close <= 0:
+                continue
+            dedup[bucket] = schemas.CandlePoint(
+                time=datetime.fromtimestamp(bucket, tz=timezone.utc).isoformat(),
+                open=float(c.open),
+                high=float(max(c.high, c.open, c.close)),
+                low=float(min(c.low, c.open, c.close)),
+                close=float(c.close),
+            )
+        except Exception:
+            continue
+
+    ordered = sorted(dedup.items(), key=lambda x: x[0])
+    if not ordered:
+        return []
+
+    out: list[schemas.CandlePoint] = []
+    prev_bucket: int | None = None
+    max_gap_fill = 60
+    max_points = max(target_points * 2, 480)
+
+    for bucket, candle in ordered:
+        if prev_bucket is not None:
+            missing = (bucket - prev_bucket) // step - 1
+            if missing > 0:
+                fill_count = min(missing, max_gap_fill, max(0, max_points - len(out) - 1))
+                for i in range(fill_count):
+                    fill_bucket = prev_bucket + step * (i + 1)
+                    base = out[-1].close if out else candle.open
+                    out.append(
+                        schemas.CandlePoint(
+                            time=datetime.fromtimestamp(fill_bucket, tz=timezone.utc).isoformat(),
+                            open=float(base),
+                            high=float(base),
+                            low=float(base),
+                            close=float(base),
+                        )
+                    )
+
+        out.append(candle)
+        prev_bucket = bucket
+
+    if len(out) > max_points:
+        out = out[-max_points:]
+    return out
+
+
+def _fetch_stable_candles(
+    db: Session,
+    asset: str,
+    preferred_timeframe: str,
+    min_points: int,
+    limit: int,
+) -> tuple[list[schemas.CandlePoint], str]:
+    settings = get_or_create_settings(db)
+    service = ExchangeService(settings)
+    best: list[schemas.CandlePoint] = []
+    best_tf = _canonical_timeframe(preferred_timeframe)
+
+    for tf in _build_timeframe_candidates(preferred_timeframe):
+        try:
+            raw = service.fetch_history(asset, timeframe=tf, limit=limit, min_points=max(40, min_points // 2))
+        except Exception:
+            continue
+
+        parsed = [c for c in (_to_candle_point(x) for x in raw) if c]
+        normalized = _normalize_candles(parsed, tf, target_points=min_points)
+
+        if len(normalized) > len(best):
+            best = normalized
+            best_tf = tf
+        if len(normalized) >= min_points:
+            return normalized, tf
+
+    return best, best_tf
+
+
 def _resolve_spot_price(db: Session, asset: str, force_refresh: bool = False) -> tuple[float, str]:
     symbol = asset.upper()
     tick = db.query(models.MarketTick).filter(models.MarketTick.asset == symbol).order_by(desc(models.MarketTick.tick_at)).first()
@@ -230,20 +369,43 @@ def get_dashboard_data(db: Session, user_id: uuid.UUID, include_chart: bool = Tr
     db.commit()
 
     chart: list[schemas.CandlePoint] = []
+    used_timeframe = _canonical_timeframe(strategy.timeframe)
     if include_chart:
-        settings = get_or_create_settings(db)
-        raw = ExchangeService(settings).fetch_history(asset, timeframe=strategy.timeframe, limit=240, min_points=80)
-        chart = [c for c in (_to_candle_point(x) for x in raw) if c]
-        chart = sorted(chart, key=lambda c: c.time)[-300:]
+        min_points = max(120, int(strategy.ma_long_period or 21) * 5)
+        chart, used_timeframe = _fetch_stable_candles(
+            db,
+            asset=asset,
+            preferred_timeframe=strategy.timeframe,
+            min_points=min_points,
+            limit=max(280, min_points * 2),
+        )
+        chart = chart[-300:]
+
+        if not chart:
+            recent_ticks = (
+                db.query(models.MarketTick)
+                .filter(models.MarketTick.asset == asset)
+                .order_by(desc(models.MarketTick.tick_at))
+                .limit(min_points)
+                .all()
+            )
+            synthetic = []
+            for t in reversed(recent_ticks):
+                p = _safe_float(t.price, 0.0)
+                if p <= 0:
+                    continue
+                ts = t.tick_at.replace(tzinfo=timezone.utc) if t.tick_at.tzinfo is None else t.tick_at.astimezone(timezone.utc)
+                synthetic.append(schemas.CandlePoint(time=ts.isoformat(), open=p, high=p, low=p, close=p))
+            chart = _normalize_candles(synthetic, used_timeframe, target_points=min_points)[-300:]
 
     return schemas.DashboardResponse(
         status="Running" if qty <= 0 else "Running (posição aberta)",
         daily_pnl=_round2(pnl),
         asset=asset,
         price_status=price_status,
-        position_qty=_round2(qty),
+        position_qty=_round4(qty),
         avg_entry_price=_round2(avg),
-        timeframe=strategy.timeframe,
+        timeframe=used_timeframe,
         ma_short_period=strategy.ma_short_period,
         ma_long_period=strategy.ma_long_period,
         chart=chart,
@@ -273,10 +435,15 @@ def run_backtest(db: Session, period_label: str = "6 Months", user_id: uuid.UUID
     strategy = get_or_create_strategy(db)
     selected = (asset or strategy.asset).upper()
     days = _period_days(period_label)
-    settings = get_or_create_settings(db)
-    raw = ExchangeService(settings).fetch_history(selected, timeframe=strategy.timeframe, limit=max(240, days), min_points=80)
-    candles = [c for c in (_to_candle_point(x) for x in raw) if c]
-    if len(candles) < 80:
+    min_points = max(80, strategy.ma_long_period + 24)
+    candles, used_timeframe = _fetch_stable_candles(
+        db,
+        asset=selected,
+        preferred_timeframe=strategy.timeframe,
+        min_points=min_points,
+        limit=max(320, days * 2),
+    )
+    if len(candles) < min_points:
         raise ValueError("Dados insuficientes para este período")
 
     prices = [float(c.close) for c in candles]
@@ -309,7 +476,7 @@ def run_backtest(db: Session, period_label: str = "6 Months", user_id: uuid.UUID
             win_rate=_round2(row.win_rate),
             max_drawdown=_round2(row.max_drawdown),
             sharpe_ratio=_round2(row.sharpe_ratio),
-            insight_summary="Backtest calculado com OHLC real.",
+            insight_summary=f"Backtest calculado com OHLC real ({used_timeframe}) após normalização de gaps/duplicatas.",
         ),
         equity_curve=[_round2(v) for v in sampled_curve],
         equity_dates=sampled_dates,
@@ -431,9 +598,15 @@ def create_live_or_paper_order(db: Session, side: models.OrderSide, payload: sch
 
     settings = get_or_create_settings(db)
     if settings.trade_mode == models.TradeMode.live:
-        ExchangeService(settings).create_live_order(symbol=f"{payload.asset.upper()}/USDT", side=side.value, amount=float(payload.quantity), price=float(payload.price))
-        order = models.PaperOrder(user_id=user_id, side=side, asset=payload.asset.upper(), price=float(payload.price), quantity=float(payload.quantity), status=models.OrderStatus.filled, simulated=False)
-        db.add(order)
+        ExchangeService(settings).create_live_order(
+            symbol=f"{payload.asset.upper()}/USDT",
+            side=side.value,
+            amount=float(payload.quantity),
+            price=float(payload.price),
+        )
+        # Mesmo em live, mantemos livro local sincronizado para P/L/posições no app.
+        order = create_paper_order(db, side, payload, user_id)
+        order.simulated = False
         db.commit()
         db.refresh(order)
         return order
@@ -463,7 +636,7 @@ def get_paper_state(db: Session, user_id: uuid.UUID, focus_asset: str | None = N
         price_status=price_status,
         floating_pnl=_round2(pnl),
         open_position_asset=asset if qty > 0 else None,
-        open_position_qty=_round2(qty),
+        open_position_qty=_round4(qty),
         avg_entry_price=_round2(avg),
         recent_orders=list_recent_paper_orders(db, user_id, 25),
     )

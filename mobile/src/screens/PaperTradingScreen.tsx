@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import { useStrategyContext } from '../context/StrategyContext';
@@ -28,7 +28,9 @@ export function PaperTradingScreen() {
   const [orderQty, setOrderQty] = useState('1');
   const [showManual, setShowManual] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const { strategy } = useStrategyContext();
+  const refreshLock = useRef(false);
 
   const asset = (strategy?.asset || state?.focus_asset || 'PETR4').toUpperCase();
 
@@ -53,7 +55,15 @@ export function PaperTradingScreen() {
   }, []);
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([loadState(), loadOrders()]);
+    if (refreshLock.current) return;
+    refreshLock.current = true;
+    try {
+      setIsRefreshing(true);
+      await Promise.all([loadState(), loadOrders()]);
+    } finally {
+      refreshLock.current = false;
+      setIsRefreshing(false);
+    }
   }, [loadOrders, loadState]);
 
   useEffect(() => {
@@ -171,6 +181,13 @@ export function PaperTradingScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       <Text style={styles.badge}>EXTRATO AUTÔNOMO DO BOT</Text>
+
+      {isRefreshing ? (
+        <View style={styles.loadingInline}>
+          <ActivityIndicator color={colors.primary} size="small" />
+          <Text style={styles.loadingText}>Sincronizando ordens e P/L…</Text>
+        </View>
+      ) : null}
 
       <View style={styles.ledgerHeader}>
         <Text style={styles.ledgerLine}>Ativo em foco: {asset}</Text>
@@ -354,6 +371,8 @@ const createStyles = (colors: ReturnType<typeof useAppTheme>['colors'], darkMode
       padding: 10,
       marginBottom: 10,
     },
+    loadingInline: { marginBottom: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
+    loadingText: { marginLeft: 8, color: colors.muted, fontSize: 12 },
     warnBannerText: { color: colors.danger, fontWeight: '600' },
     profit: { color: colors.success },
     loss: { color: colors.danger },
