@@ -184,6 +184,7 @@ export function DashboardScreen() {
     [currency]
   );
   const formatSignedMoney = (value: number) => `${value > 0 ? '+' : ''}${moneyFmt.format(value)}`;
+  const formatSignedPercent = (value: number) => `${value > 0 ? '+' : ''}${value.toFixed(2)}%`;
 
   const statusMessage = data?.asset
     ? `Monitorando ${data.asset} no mercado para possíveis entradas`
@@ -242,18 +243,21 @@ export function DashboardScreen() {
       <View style={styles.card}>
         <Text style={styles.row}>Bot Status: <Text style={styles.success}>{statusMessage}</Text></Text>
         <Text style={styles.subtle}>Fonte de preço: {data?.price_status ?? 'Preço indisponível'}</Text>
+        <Text style={styles.subtle}>Indicador do Dashboard = variação do ativo no dia (não é o P/L da sua carteira).</Text>
         <Text style={styles.row}>
-          P/L Diário:{' '}
+          Variação diária do ativo:{' '}
           <Text
             style={
-              Number(data?.daily_pnl) > 0
+              Number(data?.daily_change_value ?? data?.daily_pnl ?? 0) > 0
                 ? styles.success
-                : Number(data?.daily_pnl) < 0
+                : Number(data?.daily_change_value ?? data?.daily_pnl ?? 0) < 0
                 ? styles.error
                 : styles.row
             }
           >
-            {formatSignedMoney(Number(data?.daily_pnl ?? 0))}
+            {formatSignedMoney(Number(data?.daily_change_value ?? data?.daily_pnl ?? 0))}
+            {' · '}
+            {formatSignedPercent(Number(data?.daily_change_percent ?? 0))}
           </Text>
         </Text>
       </View>

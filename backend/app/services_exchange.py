@@ -589,6 +589,28 @@ class ExchangeService:
         self._history_cache[cache_key] = (now, result)
         return result
 
+    def _fallback_price_from_history_close(self, asset: str) -> float | None:
+        """Retorna o último close válido quando o spot em tempo real falha."""
+        try:
+            daily = self.fetch_history(asset=asset, timeframe="1d", limit=5, min_points=2, cache_ttl_seconds=120)
+            for row in reversed(daily):
+                price = float(row.get("close") or 0)
+                if math.isfinite(price) and price > 0:
+                    return price
+        except Exception:
+            pass
+
+        try:
+            intraday = self.fetch_history(asset=asset, timeframe="1h", limit=24, min_points=2, cache_ttl_seconds=120)
+            for row in reversed(intraday):
+                price = float(row.get("close") or 0)
+                if math.isfinite(price) and price > 0:
+                    return price
+        except Exception:
+            pass
+
+        return None
+
     def fetch_spot_price(self, asset: str, cache_ttl_seconds: int = 60, db: Session | None = None) -> float | None:
         asset = asset.upper()
         now = time.time()
@@ -660,6 +682,12 @@ class ExchangeService:
                     return price
             except Exception:
                 pass
+
+        # Fallback robusto de OHLCV para ações fora de pregão / APIs instáveis.
+        history_close = self._fallback_price_from_history_close(asset)
+        if history_close and history_close > 0:
+            self._spot_cache[asset] = (now, history_close)
+            return history_close
 
         # Fallback estrito: buscar o último tick salvo no banco de dados para evitar retornar R$ 1,00
         if db is not None:

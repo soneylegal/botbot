@@ -30,6 +30,12 @@ def _round4(value) -> float:
     return round(_safe_float(value), 4)
 
 
+def _fmt_money(value: float, asset: str) -> str:
+    symbol = "US$" if asset.upper() in {"BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "TRX", "AVAX", "DOT"} else "R$"
+    sign = "+" if value > 0 else ""
+    return f"{sign}{symbol} {abs(_safe_float(value)):,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -310,6 +316,86 @@ def _fetch_stable_candles(
     return best, best_tf
 
 
+def _extract_last_two_closes(candles: list[schemas.CandlePoint]) -> tuple[float, float]:
+    if len(candles) < 2:
+        return 0.0, 0.0
+    ordered = sorted(candles, key=lambda c: c.time)
+    prev_close = _safe_float(ordered[-2].close, 0.0)
+    last_close = _safe_float(ordered[-1].close, 0.0)
+    return prev_close, last_close
+
+
+def _compute_daily_asset_variation(db: Session, asset: str, current_price: float) -> tuple[float, float]:
+    settings = get_or_create_settings(db)
+    service = ExchangeService(settings)
+    previous_close = 0.0
+
+    try:
+        day_candles = service.fetch_history(asset=asset, timeframe="1d", limit=3, min_points=2)
+        valid = [c for c in (_to_candle_point(x) for x in day_candles) if c]
+        if len(valid) >= 2:
+            previous_close, _ = _extract_last_two_closes(valid)
+    except Exception:
+        previous_close = 0.0
+
+    if previous_close <= 0:
+        return 0.0, 0.0
+
+    base = current_price if current_price > 0 else previous_close
+    change_value = base - previous_close
+    change_percent = (change_value / previous_close) * 100 if previous_close > 0 else 0.0
+    return _round2(change_value), _round2(change_percent)
+
+
+def _build_paper_insight(asset: str, qty: float, avg: float, current_price: float, pnl_value: float) -> tuple[str, str, str, float, float]:
+    invested = _round2(avg * qty) if avg > 0 and qty > 0 else 0.0
+    pnl_percent = _round2((pnl_value / invested) * 100) if invested > 0 else 0.0
+
+    if qty <= 0:
+        return (
+            "Sem posição aberta",
+            f"Você está líquido em {asset}. Abra uma posição para acompanhar ganho/perda em tempo real.",
+            "neutral",
+            invested,
+            pnl_percent,
+        )
+
+    if current_price <= 0:
+        return (
+            "Preço indisponível",
+            "Não foi possível atualizar o preço agora. Usaremos o último preço válido assim que disponível.",
+            "warning",
+            invested,
+            pnl_percent,
+        )
+
+    if pnl_value > 0:
+        return (
+            "Você está no lucro",
+            f"Você está lucrando {_fmt_money(pnl_value, asset)} ({pnl_percent:.2f}%). Se fechar a posição agora, este será o ganho realizado.",
+            "success",
+            invested,
+            pnl_percent,
+        )
+
+    if pnl_value < 0:
+        return (
+            "Sua posição está em queda",
+            f"Sua posição recua {abs(pnl_percent):.2f}% (perda de {_fmt_money(pnl_value, asset)}). O investimento inicial foi {_fmt_money(invested, asset)}.",
+            "danger",
+            invested,
+            pnl_percent,
+        )
+
+    return (
+        "No zero a zero",
+        f"Sua posição está estável até agora. Investimento atual: {_fmt_money(invested, asset)}.",
+        "neutral",
+        invested,
+        pnl_percent,
+    )
+
+
 def _resolve_spot_price(db: Session, asset: str, force_refresh: bool = False) -> tuple[float, str]:
     symbol = asset.upper()
     tick = db.query(models.MarketTick).filter(models.MarketTick.asset == symbol).order_by(desc(models.MarketTick.tick_at)).first()
@@ -361,9 +447,9 @@ def get_dashboard_data(db: Session, user_id: uuid.UUID, include_chart: bool = Tr
 
     qty = _safe_float(position.quantity if position else 0)
     avg = _safe_float(position.avg_entry_price if position else 0)
-    pnl = (current_price - avg) * qty if current_price > 0 and avg > 0 and qty > 0 else 0.0
+    daily_change_value, daily_change_percent = _compute_daily_asset_variation(db, asset, current_price)
 
-    status.daily_pnl = _to_decimal(_round2(pnl))
+    status.daily_pnl = _to_decimal(_round2(daily_change_value))
     status.current_asset = asset
     status.updated_at = _utc_now()
     db.commit()
@@ -399,8 +485,10 @@ def get_dashboard_data(db: Session, user_id: uuid.UUID, include_chart: bool = Tr
             chart = _normalize_candles(synthetic, used_timeframe, target_points=min_points)[-300:]
 
     return schemas.DashboardResponse(
-        status="Running" if qty <= 0 else "Running (posição aberta)",
-        daily_pnl=_round2(pnl),
+        status="Running",
+        daily_pnl=_round2(daily_change_value),
+        daily_change_percent=_round2(daily_change_percent),
+        daily_change_value=_round2(daily_change_value),
         asset=asset,
         price_status=price_status,
         position_qty=_round4(qty),
@@ -436,54 +524,102 @@ def run_backtest(db: Session, period_label: str = "6 Months", user_id: uuid.UUID
     selected = (asset or strategy.asset).upper()
     days = _period_days(period_label)
     min_points = max(80, strategy.ma_long_period + 24)
-    candles, used_timeframe = _fetch_stable_candles(
-        db,
-        asset=selected,
-        preferred_timeframe=strategy.timeframe,
-        min_points=min_points,
-        limit=max(320, days * 2),
-    )
-    if len(candles) < min_points:
-        raise ValueError("Dados insuficientes para este período")
 
-    prices = [float(c.close) for c in candles]
-    times = [datetime.fromisoformat(c.time.replace("Z", "+00:00")) for c in candles]
-    initial = 10000.0
-    if user_id:
-        initial = max(_safe_float(get_or_create_user_balance(db, user_id).balance, 10000), 1.0)
+    try:
+        candles, used_timeframe = _fetch_stable_candles(
+            db,
+            asset=selected,
+            preferred_timeframe=strategy.timeframe,
+            min_points=min_points,
+            limit=max(320, days * 2),
+        )
+        if len(candles) < min_points:
+            raise ValueError("Dados históricos insuficientes para este ativo no momento")
 
-    result = run_ma_backtest(prices, times, strategy.ma_short_period, strategy.ma_long_period, initial_capital=initial)
+        closes: list[float] = []
+        times: list[datetime] = []
+        for candle in candles:
+            close = _safe_float(candle.close, 0.0)
+            if close <= 0:
+                continue
+            closes.append(close)
+            times.append(datetime.fromisoformat(candle.time.replace("Z", "+00:00")))
 
-    row = models.BacktestResult(
-        strategy_config_id=strategy.id,
-        period_label=period_label,
-        total_return=result["total_return"],
-        win_rate=result["win_rate"],
-        max_drawdown=result["max_drawdown"],
-        sharpe_ratio=result["sharpe_ratio"],
-        equity_curve=result["equity_curve"],
-    )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
+        if len(closes) < min_points:
+            raise ValueError("Dados históricos insuficientes para este ativo no momento")
 
-    sampled_curve, sampled_dates = _sample_aligned([float(v) for v in result["equity_curve"]], [str(v) for v in result.get("equity_timestamps", [])], 120)
-    chart = candles[-240:]
-    return schemas.BacktestResponse(
-        period_label=row.period_label,
-        metrics=schemas.BacktestMetrics(
-            total_return=_round2(row.total_return),
-            win_rate=_round2(row.win_rate),
-            max_drawdown=_round2(row.max_drawdown),
-            sharpe_ratio=_round2(row.sharpe_ratio),
-            insight_summary=f"Backtest calculado com OHLC real ({used_timeframe}) após normalização de gaps/duplicatas.",
-        ),
-        equity_curve=[_round2(v) for v in sampled_curve],
-        equity_dates=sampled_dates,
-        price_chart=chart,
-        ma_short_series=_build_ma_series(chart, strategy.ma_short_period),
-        ma_long_series=_build_ma_series(chart, strategy.ma_long_period),
-    )
+        initial = 10000.0
+        if user_id:
+            initial = max(_safe_float(get_or_create_user_balance(db, user_id).balance, 10000), 1.0)
+
+        result = run_ma_backtest(closes, times, strategy.ma_short_period, strategy.ma_long_period, initial_capital=initial)
+
+        row = models.BacktestResult(
+            strategy_config_id=strategy.id,
+            period_label=period_label,
+            total_return=result["total_return"],
+            win_rate=result["win_rate"],
+            max_drawdown=result["max_drawdown"],
+            sharpe_ratio=result["sharpe_ratio"],
+            equity_curve=result["equity_curve"],
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+
+        sampled_curve, sampled_dates = _sample_aligned([float(v) for v in result["equity_curve"]], [str(v) for v in result.get("equity_timestamps", [])], 120)
+        chart = candles[-240:]
+        tone = "success" if _safe_float(row.total_return) > 0 else "danger" if _safe_float(row.total_return) < 0 else "neutral"
+        return schemas.BacktestResponse(
+            period_label=row.period_label,
+            metrics=schemas.BacktestMetrics(
+                total_return=_round2(row.total_return),
+                win_rate=_round2(row.win_rate),
+                max_drawdown=_round2(row.max_drawdown),
+                sharpe_ratio=_round2(row.sharpe_ratio),
+                insight_summary=f"Backtest concluído com OHLC ({used_timeframe}). Resultado do período: {_round2(row.total_return):.2f}%.",
+                insight_tone=tone,
+            ),
+            equity_curve=[_round2(v) for v in sampled_curve],
+            equity_dates=sampled_dates,
+            price_chart=chart,
+            ma_short_series=_build_ma_series(chart, strategy.ma_short_period),
+            ma_long_series=_build_ma_series(chart, strategy.ma_long_period),
+        )
+    except ValueError:
+        return schemas.BacktestResponse(
+            period_label=period_label,
+            metrics=schemas.BacktestMetrics(
+                total_return=0.0,
+                win_rate=0.0,
+                max_drawdown=0.0,
+                sharpe_ratio=0.0,
+                insight_summary="Dados históricos insuficientes para este ativo no momento.",
+                insight_tone="warning",
+            ),
+            equity_curve=[],
+            equity_dates=[],
+            price_chart=[],
+            ma_short_series=[],
+            ma_long_series=[],
+        )
+    except Exception:
+        return schemas.BacktestResponse(
+            period_label=period_label,
+            metrics=schemas.BacktestMetrics(
+                total_return=0.0,
+                win_rate=0.0,
+                max_drawdown=0.0,
+                sharpe_ratio=0.0,
+                insight_summary="Dados históricos insuficientes para este ativo no momento.",
+                insight_tone="warning",
+            ),
+            equity_curve=[],
+            equity_dates=[],
+            price_chart=[],
+            ma_short_series=[],
+            ma_long_series=[],
+        )
 
 
 def get_latest_backtest(db: Session, user_id: uuid.UUID | None = None) -> schemas.BacktestResponse:
@@ -628,6 +764,13 @@ def get_paper_state(db: Session, user_id: uuid.UUID, focus_asset: str | None = N
     qty = _safe_float(pos.quantity if pos else 0)
     avg = _safe_float(pos.avg_entry_price if pos else 0)
     pnl = (current_price - avg) * qty if current_price > 0 and avg > 0 and qty > 0 else 0
+    insight_title, insight_message, insight_tone, invested_capital, pnl_percent = _build_paper_insight(
+        asset=asset,
+        qty=qty,
+        avg=avg,
+        current_price=current_price,
+        pnl_value=pnl,
+    )
 
     return schemas.PaperStateResponse(
         balance=_round2(bal.balance),
@@ -635,9 +778,14 @@ def get_paper_state(db: Session, user_id: uuid.UUID, focus_asset: str | None = N
         current_price=_round2(current_price),
         price_status=price_status,
         floating_pnl=_round2(pnl),
+        floating_pnl_percent=_round2(pnl_percent),
+        invested_capital=_round2(invested_capital),
         open_position_asset=asset if qty > 0 else None,
         open_position_qty=_round4(qty),
         avg_entry_price=_round2(avg),
+        insight_title=insight_title,
+        insight_message=insight_message,
+        insight_tone=insight_tone,
         recent_orders=list_recent_paper_orders(db, user_id, 25),
     )
 

@@ -56,6 +56,8 @@ class IndicatorPoint(BaseModel):
 class DashboardResponse(BaseModel):
     status: str
     daily_pnl: float
+    daily_change_percent: float = 0
+    daily_change_value: float = 0
     asset: str | None = None
     price_status: str = "live"
     position_qty: float = 0
@@ -86,6 +88,7 @@ class BacktestMetrics(BaseModel):
     max_drawdown: float
     sharpe_ratio: float
     insight_summary: str | None = None
+    insight_tone: str = "neutral"
 
 
 class BacktestResponse(BaseModel):
@@ -167,7 +170,12 @@ class PaperStateResponse(BaseModel):
     current_price: float
     price_status: str = "live"
     floating_pnl: float
+    floating_pnl_percent: float = 0
+    invested_capital: float = 0
     open_position_asset: str | None
     open_position_qty: float
     avg_entry_price: float
+    insight_title: str | None = None
+    insight_message: str | None = None
+    insight_tone: str = "neutral"
     recent_orders: list[PaperOrderOut]
