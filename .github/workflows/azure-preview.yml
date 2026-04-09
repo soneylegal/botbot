@@ -126,7 +126,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.azd/bin:$PATH"
-          azd provision --preview --no-prompt
+          azd provision --preview --no-prompt 2>&1 | tee /tmp/azd-provision.log
 
       - name: Pipeline diagnostics summary
         if: always()
@@ -147,6 +147,32 @@ jobs:
 
           if [[ "${{ steps.preview_infra.outcome }}" == "failure" ]]; then
             echo "::error title=AZD Preview Failed::Falha no azd provision --preview. Verifique permissões de Contributor, quotas e providers na subscription."
+
+            if [[ -f /tmp/azd-provision.log ]]; then
+              echo "::group::azd provision output (tail)"
+              tail -n 200 /tmp/azd-provision.log || true
+              echo "::endgroup::"
+            fi
+
+            if grep -Eqi "SubscriptionIsOverQuota|QuotaExceeded|exceed(ed)? quota|OperationNotAllowed" /tmp/azd-provision.log; then
+              echo "::error title=Quota Limit Detected::A subscription atingiu limite de quota/vCPU. Em Azure for Students isso e comum e exige reduzir SKU, trocar regiao ou pedir aumento de quota."
+            fi
+
+            if grep -Eqi "The selected region is currently not accepting new customers|LocationNotAvailableForSubscription|not available in location|locationineligible" /tmp/azd-provision.log; then
+              echo "::error title=Region Access Restriction::A regiao/francecentral pode estar bloqueada para novos recursos nesse tenant/subscription. Isso pode acontecer em ofertas estudantis."
+            fi
+
+            if grep -Eqi "SubscriptionDisabled|ReadOnlyDisabledSubscription|spending limit|offer does not support|OfferNotSupported" /tmp/azd-provision.log; then
+              echo "::error title=Subscription Offer Restriction::A assinatura pode estar com spending limit/credito esgotado ou restricao da oferta Azure for Students."
+            fi
+
+            if grep -Eqi "AuthorizationFailed|does not have authorization|insufficient privileges" /tmp/azd-provision.log; then
+              echo "::error title=Authorization Failed::Permissoes insuficientes no escopo de deploy (subscription/resource group)."
+            fi
+
+            if grep -Eqi "MissingSubscriptionRegistration|is not registered" /tmp/azd-provision.log; then
+              echo "::error title=Provider Not Registered::Provider necessario nao registrado para a subscription."
+            fi
 
             if [[ -d "$HOME/.azd/log" ]]; then
               echo "AZD log directory: $HOME/.azd/log"

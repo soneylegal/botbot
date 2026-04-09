@@ -131,7 +131,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.azd/bin:$PATH"
-          azd provision --preview --no-prompt
+          azd provision --preview --no-prompt 2>&1 | tee /tmp/azd-provision.log
 
       - name: Deploy application
         id: deploy_app
@@ -139,7 +139,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.azd/bin:$PATH"
-          azd up --no-prompt
+          azd up --no-prompt 2>&1 | tee /tmp/azd-up.log
 
       - name: Verify health endpoint
         id: health_check
@@ -199,6 +199,41 @@ jobs:
 
           if [[ "${{ steps.preview_infra.outcome }}" == "failure" || "${{ steps.deploy_app.outcome }}" == "failure" ]]; then
             echo "::error title=AZD Deploy Failed::Falha em azd provision/azd up. Verifique permissões de Contributor na subscription/resource group, quotas da região francecentral e providers registrados."
+
+            if [[ -f /tmp/azd-provision.log ]]; then
+              echo "::group::azd provision output (tail)"
+              tail -n 200 /tmp/azd-provision.log || true
+              echo "::endgroup::"
+            fi
+
+            if [[ -f /tmp/azd-up.log ]]; then
+              echo "::group::azd up output (tail)"
+              tail -n 200 /tmp/azd-up.log || true
+              echo "::endgroup::"
+            fi
+
+            combined_log="/tmp/azd-combined.log"
+            cat /tmp/azd-provision.log /tmp/azd-up.log 2>/dev/null > "$combined_log" || true
+
+            if grep -Eqi "SubscriptionIsOverQuota|QuotaExceeded|exceed(ed)? quota|OperationNotAllowed" "$combined_log"; then
+              echo "::error title=Quota Limit Detected::A subscription atingiu limite de quota/vCPU. Em Azure for Students isso e comum e exige reduzir SKU, trocar regiao ou pedir aumento de quota."
+            fi
+
+            if grep -Eqi "The selected region is currently not accepting new customers|LocationNotAvailableForSubscription|not available in location|locationineligible" "$combined_log"; then
+              echo "::error title=Region Access Restriction::A regiao/francecentral pode estar bloqueada para novos recursos nesse tenant/subscription. Isso pode acontecer em ofertas estudantis."
+            fi
+
+            if grep -Eqi "SubscriptionDisabled|ReadOnlyDisabledSubscription|spending limit|offer does not support|OfferNotSupported" "$combined_log"; then
+              echo "::error title=Subscription Offer Restriction::A assinatura pode estar com spending limit/credito esgotado ou restricao da oferta Azure for Students."
+            fi
+
+            if grep -Eqi "AuthorizationFailed|does not have authorization|insufficient privileges" "$combined_log"; then
+              echo "::error title=Authorization Failed::Permissoes insuficientes no escopo de deploy (subscription/resource group)."
+            fi
+
+            if grep -Eqi "MissingSubscriptionRegistration|is not registered" "$combined_log"; then
+              echo "::error title=Provider Not Registered::Provider necessario nao registrado para a subscription."
+            fi
 
             if [[ -d "$HOME/.azd/log" ]]; then
               echo "AZD log directory: $HOME/.azd/log"

@@ -149,10 +149,9 @@ resource postgresServer 'Microsoft.DBforPostgreSQL/flexibleServers@2023-06-01-pr
     tier: 'Burstable'
   }
   properties: {
-    version: '16'
+    version: '15'
     administratorLogin: postgresAdminUsername
     administratorLoginPassword: postgresAdminPassword
-    availabilityZone: '1'
     storage: {
       storageSizeGB: 32
       autoGrow: 'Enabled'
