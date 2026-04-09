@@ -186,11 +186,17 @@ jobs:
           fi
 
           for i in {1..20}; do
-            if curl -fsS "https://${FQDN}/health"; then
+            if curl -fsS --connect-timeout 5 --max-time 10 "https://${FQDN}/health"; then
               echo "Health check passed"
               exit 0
             fi
             echo "Waiting for app readiness... attempt ${i}"
+
+            if (( i % 5 == 0 )); then
+              echo "Container App revision status snapshot:"
+              az containerapp revision list -g "${RESOURCE_GROUP}" -n "${APP_NAME}" --query "[].{name:name,active:properties.active,health:properties.healthState,running:properties.runningState,replicas:properties.replicas}" --output table || true
+            fi
+
             sleep 10
           done
 
