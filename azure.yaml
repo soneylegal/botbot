@@ -1,0 +1,12 @@
+name: botbot
+metadata:
+  template: botbot@0.0.1
+
+services:
+  backend:
+    project: ./backend
+    host: containerapp
+    language: py
+    docker:
+      path: ./Dockerfile
+      context: .

@@ -1,0 +1,55 @@
+name: Preview Azure changes
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AZURE_LOCATION: eastus
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login with OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup AZD
+        uses: azure/setup-azd@v2
+
+      - name: Prepare ephemeral azd environment
+        shell: bash
+        env:
+          AZURE_ENV_NAME: pr-${{ github.event.pull_request.number }}
+          POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+          azd env new "${AZURE_ENV_NAME}" --no-prompt || true
+          azd env set AZURE_LOCATION "${AZURE_LOCATION}"
+          azd env set AZURE_SUBSCRIPTION_ID "${AZURE_SUBSCRIPTION_ID}"
+          azd env set AZURE_RESOURCE_GROUP "rg-${AZURE_ENV_NAME}"
+          azd env set POSTGRES_ADMIN_PASSWORD "${POSTGRES_ADMIN_PASSWORD}"
+          azd env set JWT_SECRET_KEY "${JWT_SECRET_KEY}"
+
+      - name: Preview infrastructure changes
+        shell: bash
+        env:
+          AZURE_ENV_NAME: pr-${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          azd provision --preview --no-prompt

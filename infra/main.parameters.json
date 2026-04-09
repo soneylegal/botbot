@@ -1,0 +1,47 @@
+{
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "${AZURE_ENV_NAME}"
+    },
+    "location": {
+      "value": "${AZURE_LOCATION}"
+    },
+    "postgresAdminUsername": {
+      "value": "botbotadmin"
+    },
+    "postgresAdminPassword": {
+      "value": "${POSTGRES_ADMIN_PASSWORD}"
+    },
+    "jwtSecretKey": {
+      "value": "${JWT_SECRET_KEY}"
+    },
+    "apiTitle": {
+      "value": "Swing Trade Bot API"
+    },
+    "apiVersion": {
+      "value": "0.1.0"
+    },
+    "jwtAlgorithm": {
+      "value": "HS256"
+    },
+    "jwtExpireMinutes": {
+      "value": "120"
+    },
+    "jwtRefreshExpireMinutes": {
+      "value": "10080"
+    },
+    "marketStreamIntervalSeconds": {
+      "value": "2.0"
+    },
+    "botAutomationIntervalSeconds": {
+      "value": "60.0"
+    },
+    "containerCpu": {
+      "value": "0.5"
+    },
+    "containerMemory": {
+      "value": "1Gi"
+    }
+  }
+}
