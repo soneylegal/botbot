@@ -199,3 +199,55 @@ Os workflows usam `francecentral` por padrão (compatível com a sua assinatura)
 Atualize no app mobile:
 
 - `EXPO_PUBLIC_API_BASE_URL=https://<fqdn-do-container-app>`
+
+## Publicar interface web na mesma URL do backend (mais rápido)
+
+Para colocar a interface no ar sem criar novo recurso (por exemplo, quando Static Web Apps estiver bloqueado por policy), este repositório já permite servir a UI web pelo mesmo Container App da API.
+
+Como funciona:
+
+1. O workflow de deploy (`.github/workflows/azure-deploy.yml`) executa build web do Expo.
+2. Os arquivos gerados são copiados para `backend/app_web` antes do build da imagem Docker.
+3. O FastAPI monta os arquivos estáticos no `/` quando `backend/app_web/index.html` existe.
+
+Resultado:
+
+- Interface web: `https://<fqdn-do-container-app>/`
+- Swagger: `https://<fqdn-do-container-app>/docs`
+- Health: `https://<fqdn-do-container-app>/health`
+
+Secret recomendado no GitHub para esse fluxo:
+
+- `EXPO_PUBLIC_API_BASE_URL` (opcional): se não definido, a UI web usa o mesmo domínio automaticamente.
+
+## Deploy da Interface Web (Azure Static Web Apps)
+
+Workflow adicionado:
+
+- `.github/workflows/azure-static-web-app.yml`
+
+Este workflow publica a interface web (Expo export) em uma URL pública do Azure Static Web Apps.
+
+### 1) Criar o recurso no Azure
+
+1. No Azure Portal, crie um recurso **Static Web App**.
+2. Se preferir o caminho mais rápido, complete o assistente e finalize a criação.
+3. No recurso criado, copie o **Deployment Token**.
+
+### 2) Configurar secrets no GitHub
+
+Em Settings > Secrets and variables > Actions, crie:
+
+- `AZURE_STATIC_WEB_APPS_API_TOKEN` = deployment token do Static Web App
+- `EXPO_PUBLIC_API_BASE_URL` = URL pública da API backend (Container App)
+
+### 3) Fluxo de deploy
+
+1. Push na branch `main` com alterações em `mobile/**` dispara o workflow.
+2. O workflow executa build web do Expo (`npm run build:web`).
+3. O conteúdo gerado é publicado no Azure Static Web Apps.
+
+### 4) Acessar a interface
+
+- Abra a URL do Static Web App (ex.: `https://<nome>.azurestaticapps.net`).
+- A aplicação web consumirá a API via `EXPO_PUBLIC_API_BASE_URL`.

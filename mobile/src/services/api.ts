@@ -1,7 +1,13 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:8000';
+const envApiBaseUrl = (
+  globalThis as { process?: { env?: { EXPO_PUBLIC_API_BASE_URL?: string } } }
+).process?.env?.EXPO_PUBLIC_API_BASE_URL;
+
+const API_BASE_URL =
+  envApiBaseUrl ??
+  (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8000');
 
 export const api = axios.create({
   // Ajuste para IP local quando testar no device físico.

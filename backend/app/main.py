@@ -1,9 +1,11 @@
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 
 from app.config import API_TITLE, API_VERSION
 from app.core2 import ensure_seed_admin
@@ -139,3 +141,7 @@ app.include_router(backtest.router)
 app.include_router(logs.router)
 app.include_router(settings.router)
 app.include_router(paper.router)
+
+_web_dir = Path(__file__).resolve().parent.parent / "app_web"
+if (_web_dir / "index.html").exists():
+    app.mount("/", StaticFiles(directory=str(_web_dir), html=True), name="web-ui")

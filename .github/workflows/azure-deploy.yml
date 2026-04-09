@@ -107,6 +107,23 @@ jobs:
             fi
           done
 
+      - name: Setup Node for web build
+        id: setup_node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build web UI assets
+        id: build_web_ui
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix mobile ci
+          npm --prefix mobile run build:web
+          rm -rf backend/app_web
+          mkdir -p backend/app_web
+          cp -R mobile/dist/. backend/app_web/
+
       - name: Prepare azd environment
         id: prepare_env
         shell: bash
@@ -214,6 +231,8 @@ jobs:
           echo "install_azd=${{ steps.install_azd.outcome }}"
           echo "validate_azure_context=${{ steps.validate_azure_context.outcome }}"
           echo "ensure_providers=${{ steps.ensure_providers.outcome }}"
+          echo "setup_node=${{ steps.setup_node.outcome }}"
+          echo "build_web_ui=${{ steps.build_web_ui.outcome }}"
           echo "prepare_env=${{ steps.prepare_env.outcome }}"
           echo "preview_infra=${{ steps.preview_infra.outcome }}"
           echo "deploy_app=${{ steps.deploy_app.outcome }}"
