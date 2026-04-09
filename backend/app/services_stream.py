@@ -85,27 +85,37 @@ def _next_price(db: Session, asset: str) -> float:
     return max(0.1, base + random.uniform(-0.35, 0.45))
 
 
+def _market_stream_iteration_sync() -> tuple[str, dict] | None:
+    db = SessionLocal()
+    try:
+        asset = _current_asset(db)
+        price = _next_price(db, asset)
+        tick = _insert_tick(db, asset, price)
+        return (
+            asset,
+            {
+                "asset": asset,
+                "price": float(tick.price),
+                "volume": float(tick.volume),
+                "tick_at": tick.tick_at.isoformat(),
+            },
+        )
+    except Exception:
+        return None
+    finally:
+        db.close()
+
+
 async def market_stream_loop(stop_event: asyncio.Event):
     while not stop_event.is_set():
-        db = SessionLocal()
         try:
             await manager.process_close_requests()
-            asset = _current_asset(db)
-            price = _next_price(db, asset)
-            tick = _insert_tick(db, asset, price)
-            await manager.broadcast(
-                asset,
-                {
-                    "asset": asset,
-                    "price": float(tick.price),
-                    "volume": float(tick.volume),
-                    "tick_at": tick.tick_at.isoformat(),
-                },
-            )
+            result = await asyncio.to_thread(_market_stream_iteration_sync)
+            if result is not None:
+                asset, payload = result
+                await manager.broadcast(asset, payload)
         except Exception:
             # protege loop de stream contra queda total do processo
             pass
-        finally:
-            db.close()
 
         await asyncio.sleep(MARKET_STREAM_INTERVAL_SECONDS)

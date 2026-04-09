@@ -37,116 +37,120 @@ def _latest_signal(asset: str, ma_short: int, ma_long: int, closes: list[float],
     return prev, curr, ts
 
 
+def _bot_automation_iteration_sync() -> None:
+    db = SessionLocal()
+    try:
+        bot_status = get_or_create_status(db)
+        if bot_status.status != "Running":
+            return
+
+        strategy = get_or_create_strategy(db)
+        settings = get_or_create_settings(db)
+        service = ExchangeService(settings)
+        try:
+            closes, times = service.fetch_historical_closes(strategy.asset, days=2)
+        except ValueError:
+            return
+
+        prev_sig, curr_sig, ts = _latest_signal(
+            strategy.asset,
+            strategy.ma_short_period,
+            strategy.ma_long_period,
+            closes,
+            times,
+        )
+        strategy_key = f"{strategy.asset}:{strategy.ma_short_period}:{strategy.ma_long_period}:{strategy.timeframe}"
+        if ts is None or ts == state.last_processed.get(strategy_key):
+            return
+
+        crossover_up = prev_sig == 0 and curr_sig == 1
+        crossover_down = prev_sig == 1 and curr_sig == 0
+        if not (crossover_up or crossover_down):
+            state.last_processed[strategy_key] = ts
+            return
+
+        users = db.query(models.User).filter(models.User.is_active.is_(True)).all()
+        last_price = float(closes[-1]) if closes else 0.0
+        if last_price <= 0:
+            state.last_processed[strategy_key] = ts
+            return
+
+        for user in users:
+            position = (
+                db.query(models.UserPosition)
+                .filter(
+                    models.UserPosition.user_id == user.id,
+                    models.UserPosition.asset == strategy.asset,
+                    models.UserPosition.quantity > 0,
+                )
+                .first()
+            )
+
+            if crossover_up and (not position or float(position.quantity) == 0):
+                balance_row = db.query(models.UserBalance).filter(models.UserBalance.user_id == user.id).first()
+                if not balance_row or float(balance_row.balance) <= 10:
+                    continue
+                budget = min(float(balance_row.balance), 1000.0)
+                qty = round(budget / last_price, 4)
+                if qty <= 0:
+                    continue
+                create_paper_order(
+                    db,
+                    models.OrderSide.buy,
+                    schemas.PaperOrderIn(asset=strategy.asset, price=last_price, quantity=qty),
+                    user_id=user.id,
+                )
+                db.add(
+                    models.LogEntry(
+                        user_id=user.id,
+                        level=models.LogLevel.info,
+                        message="Bot executou ordem automatica devido ao cruzamento de medias",
+                        details={
+                            "asset": strategy.asset,
+                            "signal": "buy",
+                            "price": last_price,
+                            "qty": qty,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                )
+                db.commit()
+
+            if crossover_down and position and float(position.quantity) > 0:
+                qty = float(position.quantity)
+                create_paper_order(
+                    db,
+                    models.OrderSide.sell,
+                    schemas.PaperOrderIn(asset=strategy.asset, price=last_price, quantity=qty),
+                    user_id=user.id,
+                )
+                db.add(
+                    models.LogEntry(
+                        user_id=user.id,
+                        level=models.LogLevel.info,
+                        message="Bot executou ordem automatica devido ao cruzamento de medias",
+                        details={
+                            "asset": strategy.asset,
+                            "signal": "sell",
+                            "price": last_price,
+                            "qty": qty,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        },
+                    )
+                )
+                db.commit()
+
+        state.last_processed[strategy_key] = ts
+    finally:
+        db.close()
+
+
 async def bot_automation_loop(stop_event: asyncio.Event):
     while not stop_event.is_set():
-        db = SessionLocal()
         try:
-            bot_status = get_or_create_status(db)
-            if bot_status.status != "Running":
-                await asyncio.sleep(BOT_AUTOMATION_INTERVAL_SECONDS)
-                continue
-
-            strategy = get_or_create_strategy(db)
-            settings = get_or_create_settings(db)
-            service = ExchangeService(settings)
-            try:
-                closes, times = service.fetch_historical_closes(strategy.asset, days=2)
-            except ValueError:
-                await asyncio.sleep(BOT_AUTOMATION_INTERVAL_SECONDS)
-                continue
-            prev_sig, curr_sig, ts = _latest_signal(
-                strategy.asset,
-                strategy.ma_short_period,
-                strategy.ma_long_period,
-                closes,
-                times,
-            )
-            strategy_key = f"{strategy.asset}:{strategy.ma_short_period}:{strategy.ma_long_period}:{strategy.timeframe}"
-            if ts is None or ts == state.last_processed.get(strategy_key):
-                await asyncio.sleep(BOT_AUTOMATION_INTERVAL_SECONDS)
-                continue
-
-            crossover_up = prev_sig == 0 and curr_sig == 1
-            crossover_down = prev_sig == 1 and curr_sig == 0
-            if not (crossover_up or crossover_down):
-                state.last_processed[strategy_key] = ts
-                await asyncio.sleep(BOT_AUTOMATION_INTERVAL_SECONDS)
-                continue
-
-            users = db.query(models.User).filter(models.User.is_active.is_(True)).all()
-            last_price = float(closes[-1]) if closes else 0.0
-            if last_price <= 0:
-                state.last_processed[strategy_key] = ts
-                await asyncio.sleep(BOT_AUTOMATION_INTERVAL_SECONDS)
-                continue
-
-            for user in users:
-                position = (
-                    db.query(models.UserPosition)
-                    .filter(
-                        models.UserPosition.user_id == user.id,
-                        models.UserPosition.asset == strategy.asset,
-                        models.UserPosition.quantity > 0,
-                    )
-                    .first()
-                )
-
-                if crossover_up and (not position or float(position.quantity) == 0):
-                    balance_row = db.query(models.UserBalance).filter(models.UserBalance.user_id == user.id).first()
-                    if not balance_row or float(balance_row.balance) <= 10:
-                        continue
-                    budget = min(float(balance_row.balance), 1000.0)
-                    qty = round(budget / last_price, 4)
-                    if qty <= 0:
-                        continue
-                    create_paper_order(
-                        db,
-                        models.OrderSide.buy,
-                        schemas.PaperOrderIn(asset=strategy.asset, price=last_price, quantity=qty),
-                        user_id=user.id,
-                    )
-                    db.add(
-                        models.LogEntry(
-                            user_id=user.id,
-                            level=models.LogLevel.info,
-                            message="Bot executou ordem automática devido ao cruzamento de médias",
-                            details={
-                                "asset": strategy.asset,
-                                "signal": "buy",
-                                "price": last_price,
-                                "qty": qty,
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
-                            },
-                        )
-                    )
-                    db.commit()
-
-                if crossover_down and position and float(position.quantity) > 0:
-                    qty = float(position.quantity)
-                    create_paper_order(
-                        db,
-                        models.OrderSide.sell,
-                        schemas.PaperOrderIn(asset=strategy.asset, price=last_price, quantity=qty),
-                        user_id=user.id,
-                    )
-                    db.add(
-                        models.LogEntry(
-                            user_id=user.id,
-                            level=models.LogLevel.info,
-                            message="Bot executou ordem automática devido ao cruzamento de médias",
-                            details={
-                                "asset": strategy.asset,
-                                "signal": "sell",
-                                "price": last_price,
-                                "qty": qty,
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
-                            },
-                        )
-                    )
-                    db.commit()
-
-            state.last_processed[strategy_key] = ts
-        finally:
-            db.close()
+            await asyncio.to_thread(_bot_automation_iteration_sync)
+        except Exception:
+            # protege loop de automacao contra queda total do processo
+            pass
 
         await asyncio.sleep(BOT_AUTOMATION_INTERVAL_SECONDS)
