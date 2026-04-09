@@ -268,7 +268,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'backend'
-          image: '${containerRegistry.properties.loginServer}/backend:${environmentName}'
+          image: 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
           resources: {
             cpu: json(containerCpu)
             memory: containerMemory
