@@ -19,19 +19,11 @@ jobs:
 
     steps:
       - name: Checkout
+        id: checkout
         uses: actions/checkout@v6
 
-      - name: Azure login with OIDC
-        uses: azure/login@v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Setup AZD
-        uses: azure/setup-azd@v2
-
       - name: Validate required secrets
+        id: validate_secrets
         shell: bash
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -55,16 +47,35 @@ jobs:
             exit 1
           fi
 
-      - name: Validate Azure context
+      - name: Azure login with OIDC
+        id: azure_login
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install AZD CLI
+        id: install_azd
         shell: bash
         run: |
           set -euo pipefail
+          curl -fsSL https://aka.ms/install-azd.sh | bash
+          echo "$HOME/.azd/bin" >> "$GITHUB_PATH"
+
+      - name: Validate Azure context
+        id: validate_azure_context
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.azd/bin:$PATH"
           az version
           az account show --output table
           azd version
           azd config set auth.useAzCliAuth true
 
       - name: Prepare ephemeral azd environment
+        id: prepare_env
         shell: bash
         env:
           AZURE_ENV_NAME: pr-${{ github.event.pull_request.number }}
@@ -73,6 +84,7 @@ jobs:
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           set -euo pipefail
+          export PATH="$HOME/.azd/bin:$PATH"
           azd env new "${AZURE_ENV_NAME}" --no-prompt || true
           azd env set AZURE_LOCATION "${AZURE_LOCATION}"
           azd env set AZURE_SUBSCRIPTION_ID "${AZURE_SUBSCRIPTION_ID}"
@@ -81,9 +93,31 @@ jobs:
           azd env set JWT_SECRET_KEY "${JWT_SECRET_KEY}"
 
       - name: Preview infrastructure changes
+        id: preview_infra
         shell: bash
         env:
           AZURE_ENV_NAME: pr-${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          export PATH="$HOME/.azd/bin:$PATH"
           azd provision --preview --no-prompt
+
+      - name: Pipeline diagnostics summary
+        if: always()
+        shell: bash
+        run: |
+          echo "checkout=${{ steps.checkout.outcome }}"
+          echo "validate_secrets=${{ steps.validate_secrets.outcome }}"
+          echo "azure_login=${{ steps.azure_login.outcome }}"
+          echo "install_azd=${{ steps.install_azd.outcome }}"
+          echo "validate_azure_context=${{ steps.validate_azure_context.outcome }}"
+          echo "prepare_env=${{ steps.prepare_env.outcome }}"
+          echo "preview_infra=${{ steps.preview_infra.outcome }}"
+
+          if [[ "${{ steps.azure_login.outcome }}" != "success" ]]; then
+            echo "::error title=Azure Login Failed::Falha no azure/login. Verifique OIDC (federated credential), tenant, subscription e client id."
+          fi
+
+          if [[ "${{ steps.preview_infra.outcome }}" == "failure" ]]; then
+            echo "::error title=AZD Preview Failed::Falha no azd provision --preview. Verifique permissões/RBAC, quotas e providers na subscription."
+          fi

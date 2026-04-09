@@ -26,19 +26,11 @@ jobs:
 
     steps:
       - name: Checkout
+        id: checkout
         uses: actions/checkout@v6
 
-      - name: Azure login with OIDC
-        uses: azure/login@v3
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
-      - name: Setup AZD
-        uses: azure/setup-azd@v2
-
       - name: Validate required secrets
+        id: validate_secrets
         shell: bash
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -62,16 +54,35 @@ jobs:
             exit 1
           fi
 
-      - name: Validate Azure context
+      - name: Azure login with OIDC
+        id: azure_login
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install AZD CLI
+        id: install_azd
         shell: bash
         run: |
           set -euo pipefail
+          curl -fsSL https://aka.ms/install-azd.sh | bash
+          echo "$HOME/.azd/bin" >> "$GITHUB_PATH"
+
+      - name: Validate Azure context
+        id: validate_azure_context
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.azd/bin:$PATH"
           az version
           az account show --output table
           azd version
           azd config set auth.useAzCliAuth true
 
       - name: Prepare azd environment
+        id: prepare_env
         shell: bash
         env:
           POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
@@ -79,6 +90,7 @@ jobs:
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           set -euo pipefail
+          export PATH="$HOME/.azd/bin:$PATH"
           azd version
           azd env new "${AZURE_ENV_NAME}" --no-prompt || true
           azd env set AZURE_LOCATION "${AZURE_LOCATION}"
@@ -88,21 +100,27 @@ jobs:
           azd env set JWT_SECRET_KEY "${JWT_SECRET_KEY}"
 
       - name: Validate infrastructure changes
+        id: preview_infra
         shell: bash
         run: |
           set -euo pipefail
+          export PATH="$HOME/.azd/bin:$PATH"
           azd provision --preview --no-prompt
 
       - name: Deploy application
+        id: deploy_app
         shell: bash
         run: |
           set -euo pipefail
+          export PATH="$HOME/.azd/bin:$PATH"
           azd up --no-prompt
 
       - name: Verify health endpoint
+        id: health_check
         shell: bash
         run: |
           set -euo pipefail
+          export PATH="$HOME/.azd/bin:$PATH"
           eval "$(azd env get-values --environment "${AZURE_ENV_NAME}")"
           RESOURCE_GROUP="${AZURE_RESOURCE_GROUP:-rg-${AZURE_ENV_NAME}}"
           APP_NAME="$(az containerapp list -g "${RESOURCE_GROUP}" --query "[0].name" -o tsv)"
@@ -133,3 +151,25 @@ jobs:
           echo "Health check failed after retries"
           az containerapp logs show -g "${RESOURCE_GROUP}" -n "${APP_NAME}" --tail 200 || true
           exit 1
+
+      - name: Pipeline diagnostics summary
+        if: always()
+        shell: bash
+        run: |
+          echo "checkout=${{ steps.checkout.outcome }}"
+          echo "validate_secrets=${{ steps.validate_secrets.outcome }}"
+          echo "azure_login=${{ steps.azure_login.outcome }}"
+          echo "install_azd=${{ steps.install_azd.outcome }}"
+          echo "validate_azure_context=${{ steps.validate_azure_context.outcome }}"
+          echo "prepare_env=${{ steps.prepare_env.outcome }}"
+          echo "preview_infra=${{ steps.preview_infra.outcome }}"
+          echo "deploy_app=${{ steps.deploy_app.outcome }}"
+          echo "health_check=${{ steps.health_check.outcome }}"
+
+          if [[ "${{ steps.azure_login.outcome }}" != "success" ]]; then
+            echo "::error title=Azure Login Failed::Falha no azure/login. Verifique OIDC (federated credential), tenant, subscription e client id."
+          fi
+
+          if [[ "${{ steps.preview_infra.outcome }}" == "failure" || "${{ steps.deploy_app.outcome }}" == "failure" ]]; then
+            echo "::error title=AZD Deploy Failed::Falha em azd provision/azd up. Verifique RBAC (Contributor + User Access Administrator) e quotas da região francecentral."
+          fi
