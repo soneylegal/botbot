@@ -18,6 +18,8 @@ app = FastAPI(title=API_TITLE, version=API_VERSION)
 
 _bg_stop_event: asyncio.Event | None = None
 _bg_tasks: list[asyncio.Task] = []
+_startup_ready = False
+_startup_error: str | None = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,14 +32,26 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def on_startup():
-    global _bg_stop_event, _bg_tasks
-    Base.metadata.create_all(bind=engine)
-    apply_runtime_migrations()
-    db = SessionLocal()
+    global _bg_stop_event, _bg_tasks, _startup_ready, _startup_error
+
+    def _initialize_sync() -> None:
+        Base.metadata.create_all(bind=engine)
+        apply_runtime_migrations()
+        db = SessionLocal()
+        try:
+            ensure_seed_admin(db)
+        finally:
+            db.close()
+
     try:
-        ensure_seed_admin(db)
-    finally:
-        db.close()
+        # Avoid blocking container startup forever if database/network is slow.
+        await asyncio.wait_for(asyncio.to_thread(_initialize_sync), timeout=90)
+        _startup_ready = True
+        _startup_error = None
+    except Exception as exc:
+        _startup_ready = False
+        _startup_error = f"startup initialization failed: {exc}"
+        print(_startup_error)
 
     _bg_stop_event = asyncio.Event()
     _bg_tasks = [
@@ -48,7 +62,7 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    global _bg_stop_event, _bg_tasks
+    global _bg_stop_event, _bg_tasks, _startup_ready, _startup_error
     if _bg_stop_event:
         _bg_stop_event.set()
     for task in _bg_tasks:
@@ -57,10 +71,16 @@ async def on_shutdown():
         await asyncio.gather(*_bg_tasks, return_exceptions=True)
     _bg_tasks = []
     _bg_stop_event = None
+    _startup_ready = False
+    _startup_error = None
 
 @app.get("/health")
 def health():
-    return {"ok": True}
+    return {
+        "ok": True,
+        "startup_ready": _startup_ready,
+        "startup_error": _startup_error,
+    }
 
 
 @app.websocket("/ws/market/{asset}")
