@@ -15,6 +15,12 @@ function RootApp() {
   const { colors, darkMode, setDarkMode } = useAppTheme();
 
   useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.title = 'Swing Trade Bot';
+    }
+  }, []);
+
+  useEffect(() => {
     void clearVisualCacheOnColdStart();
   }, []);
 
