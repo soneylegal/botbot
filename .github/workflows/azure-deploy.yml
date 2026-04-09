@@ -139,7 +139,27 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.azd/bin:$PATH"
-          azd up --no-prompt 2>&1 | tee /tmp/azd-up.log
+          azd provision --no-prompt 2>&1 | tee /tmp/azd-provision-apply.log
+
+          eval "$(azd env get-values --environment "${AZURE_ENV_NAME}")"
+          RESOURCE_GROUP="${AZURE_RESOURCE_GROUP:-rg-${AZURE_ENV_NAME}}"
+          ACR_ENDPOINT="${AZURE_CONTAINER_REGISTRY_ENDPOINT:-}"
+
+          if [[ -z "$ACR_ENDPOINT" ]]; then
+            ACR_ENDPOINT="$(az acr list -g "$RESOURCE_GROUP" --query "[0].loginServer" -o tsv || true)"
+            if [[ -n "$ACR_ENDPOINT" ]]; then
+              azd env set AZURE_CONTAINER_REGISTRY_ENDPOINT "$ACR_ENDPOINT"
+            fi
+          fi
+
+          if [[ -z "$ACR_ENDPOINT" ]]; then
+            echo "Could not determine ACR endpoint for resource group $RESOURCE_GROUP"
+            az acr list -g "$RESOURCE_GROUP" --output table || true
+            exit 1
+          fi
+
+          echo "Using ACR endpoint: $ACR_ENDPOINT"
+          azd deploy --all --no-prompt 2>&1 | tee /tmp/azd-deploy.log
 
       - name: Verify health endpoint
         id: health_check
@@ -206,14 +226,20 @@ jobs:
               echo "::endgroup::"
             fi
 
-            if [[ -f /tmp/azd-up.log ]]; then
-              echo "::group::azd up output (tail)"
-              tail -n 200 /tmp/azd-up.log || true
+            if [[ -f /tmp/azd-provision-apply.log ]]; then
+              echo "::group::azd provision output (apply tail)"
+              tail -n 200 /tmp/azd-provision-apply.log || true
+              echo "::endgroup::"
+            fi
+
+            if [[ -f /tmp/azd-deploy.log ]]; then
+              echo "::group::azd deploy output (tail)"
+              tail -n 200 /tmp/azd-deploy.log || true
               echo "::endgroup::"
             fi
 
             combined_log="/tmp/azd-combined.log"
-            cat /tmp/azd-provision.log /tmp/azd-up.log 2>/dev/null > "$combined_log" || true
+            cat /tmp/azd-provision.log /tmp/azd-provision-apply.log /tmp/azd-deploy.log 2>/dev/null > "$combined_log" || true
 
             if grep -Eqi "SubscriptionIsOverQuota|QuotaExceeded|exceed(ed)? quota|OperationNotAllowed" "$combined_log"; then
               echo "::error title=Quota Limit Detected::A subscription atingiu limite de quota/vCPU. Em Azure for Students isso e comum e exige reduzir SKU, trocar regiao ou pedir aumento de quota."

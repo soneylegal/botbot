@@ -327,6 +327,7 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
 
 output RESOURCE_GROUP_ID string = resourceGroup().id
 output CONTAINER_APP_URL string = 'https://${containerApp.properties.configuration.ingress.fqdn}'
+output AZURE_CONTAINER_REGISTRY_ENDPOINT string = containerRegistry.properties.loginServer
 output CONTAINER_REGISTRY_ENDPOINT string = containerRegistry.properties.loginServer
 output POSTGRES_SERVER_FQDN string = postgresHost
 output KEY_VAULT_NAME string = keyVault.name
