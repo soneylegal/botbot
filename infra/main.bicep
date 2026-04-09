@@ -56,7 +56,7 @@ var logAnalyticsName = toLower('azlaw${resourceToken}')
 var containerEnvName = toLower('azcae${resourceToken}')
 var containerAppName = toLower('azcap${resourceToken}')
 var appInsightsName = toLower('azapi${resourceToken}')
-var keyVaultName = toLower('azkv${substring(resourceToken, 0, 18)}')
+var keyVaultName = toLower('azkv${substring(resourceToken, 0, 13)}')
 var postgresServerName = toLower('azpgs${resourceToken}')
 
 var postgresHost = '${postgresServerName}.postgres.database.azure.com'
@@ -76,7 +76,6 @@ resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' =
   }
   properties: {
     adminUserEnabled: true
-    anonymousPullEnabled: false
     publicNetworkAccess: 'Enabled'
   }
   tags: tags
