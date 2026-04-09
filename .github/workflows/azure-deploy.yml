@@ -81,6 +81,32 @@ jobs:
           azd version
           azd config set auth.useAzCliAuth true
 
+      - name: Ensure required Azure providers are registered
+        id: ensure_providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          providers=(
+            Microsoft.App
+            Microsoft.ContainerRegistry
+            Microsoft.KeyVault
+            Microsoft.ManagedIdentity
+            Microsoft.OperationalInsights
+            Microsoft.Insights
+            Microsoft.DBforPostgreSQL
+          )
+
+          for ns in "${providers[@]}"; do
+            state="$(az provider show --namespace "$ns" --query registrationState -o tsv || echo Unknown)"
+            echo "$ns registrationState=$state"
+            if [[ "$state" != "Registered" ]]; then
+              echo "Registering provider $ns..."
+              az provider register --namespace "$ns" --wait
+              new_state="$(az provider show --namespace "$ns" --query registrationState -o tsv || echo Unknown)"
+              echo "$ns registrationState(after)=$new_state"
+            fi
+          done
+
       - name: Prepare azd environment
         id: prepare_env
         shell: bash
@@ -161,6 +187,7 @@ jobs:
           echo "azure_login=${{ steps.azure_login.outcome }}"
           echo "install_azd=${{ steps.install_azd.outcome }}"
           echo "validate_azure_context=${{ steps.validate_azure_context.outcome }}"
+          echo "ensure_providers=${{ steps.ensure_providers.outcome }}"
           echo "prepare_env=${{ steps.prepare_env.outcome }}"
           echo "preview_infra=${{ steps.preview_infra.outcome }}"
           echo "deploy_app=${{ steps.deploy_app.outcome }}"
@@ -171,5 +198,16 @@ jobs:
           fi
 
           if [[ "${{ steps.preview_infra.outcome }}" == "failure" || "${{ steps.deploy_app.outcome }}" == "failure" ]]; then
-            echo "::error title=AZD Deploy Failed::Falha em azd provision/azd up. Verifique RBAC (Contributor + User Access Administrator) e quotas da região francecentral."
+            echo "::error title=AZD Deploy Failed::Falha em azd provision/azd up. Verifique permissões de Contributor na subscription/resource group, quotas da região francecentral e providers registrados."
+
+            if [[ -d "$HOME/.azd/log" ]]; then
+              echo "AZD log directory: $HOME/.azd/log"
+              find "$HOME/.azd/log" -type f | while read -r log_file; do
+                echo "::group::AZD log tail - ${log_file}"
+                tail -n 200 "$log_file" || true
+                echo "::endgroup::"
+              done
+            else
+              echo "No AZD log directory found."
+            fi
           fi

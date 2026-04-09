@@ -75,7 +75,7 @@ resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' =
     name: 'Basic'
   }
   properties: {
-    adminUserEnabled: false
+    adminUserEnabled: true
     anonymousPullEnabled: false
     publicNetworkAccess: 'Enabled'
   }
@@ -119,7 +119,18 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
       family: 'A'
       name: 'standard'
     }
-    enableRbacAuthorization: true
+    enableRbacAuthorization: false
+    accessPolicies: [
+      {
+        tenantId: subscription().tenantId
+        objectId: managedIdentity.properties.principalId
+        permissions: {
+          secrets: [
+            'Get'
+          ]
+        }
+      }
+    ]
     enabledForDeployment: false
     enabledForTemplateDeployment: false
     enabledForDiskEncryption: false
@@ -219,8 +230,6 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
     'azd-service-name': 'backend'
   })
   dependsOn: [
-    acrPullRoleAssignment
-    keyVaultSecretsUserRoleAssignment
     databaseUrlSecret
     jwtSecret
   ]
@@ -236,10 +245,15 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
       registries: [
         {
           server: containerRegistry.properties.loginServer
-          identity: managedIdentity.id
+          username: listCredentials(containerRegistry.id, containerRegistry.apiVersion).username
+          passwordSecretRef: 'acr-password'
         }
       ]
       secrets: [
+        {
+          name: 'acr-password'
+          value: listCredentials(containerRegistry.id, containerRegistry.apiVersion).passwords[0].value
+        }
         {
           name: 'database-url'
           keyVaultUrl: '${keyVault.properties.vaultUri}secrets/database-url'
@@ -310,26 +324,6 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
         maxReplicas: 5
       }
     }
-  }
-}
-
-resource acrPullRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(containerRegistry.id, managedIdentity.id, 'acrpull')
-  scope: containerRegistry
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
-    principalId: managedIdentity.properties.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-resource keyVaultSecretsUserRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, managedIdentity.id, 'kvsecretsuser')
-  scope: keyVault
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
-    principalId: managedIdentity.properties.principalId
-    principalType: 'ServicePrincipal'
   }
 }
 
