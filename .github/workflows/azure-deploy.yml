@@ -16,7 +16,7 @@ concurrency:
 
 env:
   AZURE_ENV_NAME: prod
-  AZURE_LOCATION: eastus
+  AZURE_LOCATION: francecentral
 
 jobs:
   deploy:
