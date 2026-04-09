@@ -17,6 +17,7 @@ concurrency:
 env:
   AZURE_ENV_NAME: prod
   AZURE_LOCATION: francecentral
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   deploy:
@@ -36,6 +37,33 @@ jobs:
 
       - name: Setup AZD
         uses: azure/setup-azd@v2
+
+      - name: Validate required secrets
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          required=(AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID POSTGRES_ADMIN_PASSWORD JWT_SECRET_KEY)
+          for key in "${required[@]}"; do
+            if [[ -z "${!key:-}" ]]; then
+              echo "Missing required GitHub secret: ${key}"
+              exit 1
+            fi
+          done
+
+      - name: Validate Azure context
+        shell: bash
+        run: |
+          set -euo pipefail
+          az version
+          az account show --output table
+          azd version
+          azd config set auth.useAzCliAuth true
 
       - name: Prepare azd environment
         shell: bash
@@ -72,7 +100,20 @@ jobs:
           eval "$(azd env get-values --environment "${AZURE_ENV_NAME}")"
           RESOURCE_GROUP="${AZURE_RESOURCE_GROUP:-rg-${AZURE_ENV_NAME}}"
           APP_NAME="$(az containerapp list -g "${RESOURCE_GROUP}" --query "[0].name" -o tsv)"
+
+          if [[ -z "${APP_NAME}" ]]; then
+            echo "No Container App found in resource group ${RESOURCE_GROUP}."
+            az resource list -g "${RESOURCE_GROUP}" --output table || true
+            exit 1
+          fi
+
           FQDN="$(az containerapp show -g "${RESOURCE_GROUP}" -n "${APP_NAME}" --query "properties.configuration.ingress.fqdn" -o tsv)"
+
+          if [[ -z "${FQDN}" ]]; then
+            echo "Container App ${APP_NAME} has no ingress FQDN."
+            az containerapp show -g "${RESOURCE_GROUP}" -n "${APP_NAME}" --output jsonc || true
+            exit 1
+          fi
 
           for i in {1..20}; do
             if curl -fsS "https://${FQDN}/health"; then
@@ -84,4 +125,5 @@ jobs:
           done
 
           echo "Health check failed after retries"
+          az containerapp logs show -g "${RESOURCE_GROUP}" -n "${APP_NAME}" --tail 200 || true
           exit 1

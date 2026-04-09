@@ -132,6 +132,7 @@ Arquivos criados para deploy:
 
 1. Na raiz do projeto:
    - `azd env new dev`
+   - `azd env set AZURE_LOCATION francecentral`
 2. Defina os segredos do ambiente:
    - `azd env set POSTGRES_ADMIN_PASSWORD <senha-forte>`
    - `azd env set JWT_SECRET_KEY <chave-jwt-forte>`
@@ -182,7 +183,7 @@ Em Settings > Secrets and variables > Actions, criar:
 
 ### 4) Ajustar região (opcional)
 
-Os workflows usam `eastus` por padrão. Para mudar, edite `AZURE_LOCATION` nos arquivos de workflow.
+Os workflows usam `francecentral` por padrão (compatível com a sua assinatura).
 
 ### 5) Fluxo de execução
 

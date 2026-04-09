@@ -11,6 +11,7 @@ permissions:
 
 env:
   AZURE_LOCATION: francecentral
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   preview:
@@ -29,6 +30,33 @@ jobs:
 
       - name: Setup AZD
         uses: azure/setup-azd@v2
+
+      - name: Validate required secrets
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          POSTGRES_ADMIN_PASSWORD: ${{ secrets.POSTGRES_ADMIN_PASSWORD }}
+          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          required=(AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID POSTGRES_ADMIN_PASSWORD JWT_SECRET_KEY)
+          for key in "${required[@]}"; do
+            if [[ -z "${!key:-}" ]]; then
+              echo "Missing required GitHub secret: ${key}"
+              exit 1
+            fi
+          done
+
+      - name: Validate Azure context
+        shell: bash
+        run: |
+          set -euo pipefail
+          az version
+          az account show --output table
+          azd version
+          azd config set auth.useAzCliAuth true
 
       - name: Prepare ephemeral azd environment
         shell: bash
