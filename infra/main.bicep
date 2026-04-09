@@ -60,7 +60,7 @@ var keyVaultName = toLower('azkv${substring(resourceToken, 0, 13)}')
 var postgresServerName = toLower('azpgs${resourceToken}')
 
 var postgresHost = '${postgresServerName}.postgres.database.azure.com'
-var postgresConnectionString = 'postgresql+psycopg://${postgresAdminUsername}:${postgresAdminPassword}@${postgresHost}:5432/swingbot?sslmode=require&connect_timeout=5'
+var postgresConnectionString = 'postgresql+psycopg://${uriComponent(postgresAdminUsername)}:${uriComponent(postgresAdminPassword)}@${postgresHost}:5432/swingbot?sslmode=require&connect_timeout=5'
 
 resource managedIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: managedIdentityName
