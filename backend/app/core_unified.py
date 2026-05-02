@@ -13,6 +13,7 @@ import math
 import uuid
 
 from sqlalchemy import desc
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import models, schemas
@@ -679,55 +680,150 @@ def update_settings(db: Session, payload: schemas.SettingsIn, user_id: uuid.UUID
 
 
 def _get_or_create_position(db: Session, user_id: uuid.UUID, asset: str) -> models.UserPosition:
-    row = db.query(models.UserPosition).filter(models.UserPosition.user_id == user_id, models.UserPosition.asset == asset).with_for_update().first()
+    """Fetch or create a UserPosition row, protected by SELECT FOR UPDATE.
+
+    Uses a SAVEPOINT to handle the race where two concurrent threads both
+    find no existing row and attempt to INSERT.  If the INSERT raises an
+    IntegrityError (unique constraint), we roll back only the savepoint
+    and retry the SELECT — this preserves the outer transaction (and
+    any existing FOR UPDATE locks on UserBalance).
+    """
+    row = (
+        db.query(models.UserPosition)
+        .filter(models.UserPosition.user_id == user_id, models.UserPosition.asset == asset)
+        .with_for_update()
+        .first()
+    )
     if row:
         return row
-    row = models.UserPosition(user_id=user_id, asset=asset, quantity=0, avg_entry_price=0)
-    db.add(row)
-    db.flush()
-    return row
+
+    try:
+        nested = db.begin_nested()  # SAVEPOINT
+        row = models.UserPosition(
+            user_id=user_id,
+            asset=asset,
+            quantity=Decimal("0"),
+            avg_entry_price=Decimal("0"),
+        )
+        db.add(row)
+        db.flush()
+        return row
+    except IntegrityError:
+        nested.rollback()  # rollback SAVEPOINT only, outer txn survives
+        return (
+            db.query(models.UserPosition)
+            .filter(models.UserPosition.user_id == user_id, models.UserPosition.asset == asset)
+            .with_for_update()
+            .one()
+        )
 
 
-def create_paper_order(db: Session, side: models.OrderSide, payload: schemas.PaperOrderIn, user_id: uuid.UUID) -> models.PaperOrder:
+def _get_or_create_balance(db: Session, user_id: uuid.UUID) -> models.UserBalance:
+    """Fetch or create a UserBalance row with FOR UPDATE lock.
+
+    Same SAVEPOINT pattern as _get_or_create_position to handle the
+    concurrent-creation race safely.
+    """
+    row = (
+        db.query(models.UserBalance)
+        .filter(models.UserBalance.user_id == user_id)
+        .with_for_update()
+        .first()
+    )
+    if row:
+        return row
+
+    try:
+        nested = db.begin_nested()
+        row = models.UserBalance(user_id=user_id, balance=Decimal("10000"))
+        db.add(row)
+        db.flush()
+        return row
+    except IntegrityError:
+        nested.rollback()
+        return (
+            db.query(models.UserBalance)
+            .filter(models.UserBalance.user_id == user_id)
+            .with_for_update()
+            .one()
+        )
+
+
+def create_paper_order(
+    db: Session,
+    side: models.OrderSide,
+    payload: schemas.PaperOrderIn,
+    user_id: uuid.UUID,
+) -> models.PaperOrder:
+    """Create a paper (simulated) order with serialized balance/position updates.
+
+    Concurrency safety:
+    - UserBalance row is locked with SELECT … FOR UPDATE before any read.
+    - UserPosition row is locked with SELECT … FOR UPDATE (via helper).
+    - Both helpers use SAVEPOINT for race-safe creation of new rows.
+    - A single db.commit() at the end makes the entire operation atomic.
+    - All arithmetic uses ``Decimal`` — no float intermediaries.
+    """
     asset = payload.asset.upper()
     strategy = get_or_create_strategy(db)
     if strategy.asset.upper() != asset:
         raise ValueError("Operações permitidas apenas no ativo da estratégia ativa.")
 
-    price = _safe_float(payload.price, 0)
-    qty = _safe_float(payload.quantity, 0)
-    if price <= 0 or qty <= 0:
+    d_price = Decimal(str(payload.price))
+    d_qty = Decimal(str(payload.quantity))
+    if d_price <= 0 or d_qty <= 0:
         raise ValueError("Preço e quantidade devem ser maiores que zero.")
 
-    balance = db.query(models.UserBalance).filter(models.UserBalance.user_id == user_id).with_for_update().first()
-    if not balance:
-        balance = models.UserBalance(user_id=user_id, balance=_to_decimal(10000))
-        db.add(balance)
-        db.flush()
-
+    # ── Lock balance and position BEFORE any business logic ──
+    balance = _get_or_create_balance(db, user_id)
     pos = _get_or_create_position(db, user_id, asset)
-    value = _to_decimal(price) * _to_decimal(qty)
+
+    order_value = d_price * d_qty
 
     if side == models.OrderSide.buy:
-        if _to_decimal(balance.balance) < value:
+        if balance.balance < order_value:
             raise ValueError("Saldo insuficiente para compra.")
-        prev_q = _to_decimal(pos.quantity)
-        prev_avg = _to_decimal(pos.avg_entry_price or 0)
-        next_q = prev_q + _to_decimal(qty)
-        pos.avg_entry_price = ((prev_q * prev_avg) + (_to_decimal(qty) * _to_decimal(price))) / next_q
-        pos.quantity = next_q
-        balance.balance = _to_decimal(balance.balance) - value
-    else:
-        if _to_decimal(pos.quantity) < _to_decimal(qty):
-            raise ValueError("Quantidade de venda maior que a posição atual.")
-        next_q = _to_decimal(pos.quantity) - _to_decimal(qty)
-        pos.quantity = next_q
-        if next_q <= 0:
-            pos.avg_entry_price = _to_decimal(0)
-        balance.balance = _to_decimal(balance.balance) + value
 
-    order = models.PaperOrder(user_id=user_id, side=side, asset=asset, price=price, quantity=qty, status=models.OrderStatus.filled, simulated=True)
+        prev_qty = pos.quantity          # already Decimal (M2)
+        prev_avg = pos.avg_entry_price   # already Decimal (M2)
+        new_qty = prev_qty + d_qty
+
+        # Weighted average entry price
+        total_cost = (prev_qty * prev_avg) + (d_qty * d_price)
+        pos.avg_entry_price = total_cost / new_qty
+        pos.quantity = new_qty
+        balance.balance -= order_value
+
+    else:  # sell
+        if pos.quantity <= 0:
+            raise ValueError("Sem posição aberta para venda neste ativo.")
+        if pos.quantity < d_qty:
+            raise ValueError("Quantidade de venda maior que a posição atual.")
+
+        pos.quantity -= d_qty
+        if pos.quantity == 0:
+            pos.avg_entry_price = Decimal("0")
+        balance.balance += order_value
+
+    order = models.PaperOrder(
+        user_id=user_id,
+        side=side,
+        asset=asset,
+        price=d_price,
+        quantity=d_qty,
+        status=models.OrderStatus.filled,
+        simulated=True,
+    )
     db.add(order)
+
+    _append_log(
+        db,
+        models.LogLevel.success,
+        f"Ordem paper executada: {side.value.upper()} {d_qty} {asset} @ {d_price}",
+        {"side": side.value, "asset": asset, "price": float(d_price), "quantity": float(d_qty)},
+        user_id=user_id,
+    )
+
     db.commit()
     db.refresh(order)
     return order
