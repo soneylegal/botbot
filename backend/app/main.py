@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
-from app.config import API_TITLE, API_VERSION
+from app.config import API_TITLE, API_VERSION, CORS_ORIGINS
 from app.core_unified import ensure_seed_admin
 from app.db import Base, SessionLocal, apply_runtime_migrations, engine
 from app.models import AppSettings, MarketTick
@@ -25,7 +25,7 @@ _startup_error: str | None = None
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

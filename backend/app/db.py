@@ -30,6 +30,9 @@ def apply_runtime_migrations():
         "ALTER TABLE IF EXISTS user_positions ADD COLUMN IF NOT EXISTS avg_entry_price NUMERIC(14,4) NOT NULL DEFAULT 0",
         "ALTER TABLE IF EXISTS app_settings ADD COLUMN IF NOT EXISTS simulated_balance NUMERIC(14,2) NOT NULL DEFAULT 10000",
         "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\"",
+        # C2: widen columns to fit Fernet ciphertext
+        "ALTER TABLE IF EXISTS app_settings ALTER COLUMN api_key TYPE VARCHAR(512)",
+        "ALTER TABLE IF EXISTS app_settings ALTER COLUMN api_secret TYPE VARCHAR(512)",
     ]
 
     for stmt in stmts:

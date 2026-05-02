@@ -8,4 +8,5 @@ PyJWT==2.10.1
 pandas==2.2.3
 numpy==2.2.6
 ccxt==4.4.95
+cryptography>=44.0.0
 yfinance==0.2.54

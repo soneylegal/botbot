@@ -2,11 +2,46 @@ import enum
 import uuid
 from datetime import datetime
 
+from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.types import TypeDecorator
 
 from app.db import Base
+
+
+class EncryptedString(TypeDecorator):
+    """Transparent Fernet encryption at rest for SQLAlchemy String columns.
+
+    Values are encrypted via ``process_bind_param`` before INSERT/UPDATE
+    and decrypted via ``process_result_value`` on SELECT.  If decryption
+    fails (e.g. the value is still plaintext from before the migration),
+    the raw value is returned as-is so existing data keeps working until
+    the one-time migration script re-writes them encrypted.
+    """
+
+    impl = String
+    cache_ok = True
+
+    @staticmethod
+    def _fernet() -> Fernet:
+        from app.config import FIELD_ENCRYPTION_KEY
+        return Fernet(FIELD_ENCRYPTION_KEY.encode())
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return self._fernet().encrypt(value.encode("utf-8")).decode("utf-8")
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        try:
+            return self._fernet().decrypt(value.encode("utf-8")).decode("utf-8")
+        except (InvalidToken, Exception):
+            # Graceful fallback: value is still plaintext (pre-migration)
+            return value
 
 
 class LogLevel(str, enum.Enum):
@@ -117,8 +152,8 @@ class AppSettings(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     api_key_masked: Mapped[str | None] = mapped_column(String(255), nullable=True)
     api_secret_masked: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    api_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    api_secret: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    api_key: Mapped[str | None] = mapped_column(EncryptedString(512), nullable=True)
+    api_secret: Mapped[str | None] = mapped_column(EncryptedString(512), nullable=True)
     exchange_name: Mapped[str] = mapped_column(String(50), default="binance")
     trade_mode: Mapped[TradeMode] = mapped_column(Enum(TradeMode), default=TradeMode.paper)
     paper_trading: Mapped[bool] = mapped_column(Boolean, default=True)

@@ -29,10 +29,13 @@ services:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/swingbot
       API_TITLE: Swing Trade Bot API
       API_VERSION: 0.1.0
-      JWT_SECRET_KEY: change-me-in-production
+      # DEV-ONLY keys — regenerate for production!
+      JWT_SECRET_KEY: QCQrrRP1ItHJ1gBfWF4Jaxpdrg4jNHaQ2Vpf_etpoeMKh1dDIlmCJcz6zh28JzIYK5dQlczjm-zznHrLNz7mhw
       JWT_ALGORITHM: HS256
       JWT_EXPIRE_MINUTES: 120
       JWT_REFRESH_EXPIRE_MINUTES: 10080
+      FIELD_ENCRYPTION_KEY: zjjURVowiYDUGRDMboBi1ub4Jpc9t_TTXU2CzTDzaeg=
+      CORS_ORIGINS: "http://localhost:8081,http://localhost:19006,http://localhost:8000"
       MARKET_STREAM_INTERVAL_SECONDS: 2.0
     ports:
       - '8000:8000'
