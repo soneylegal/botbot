@@ -7,7 +7,7 @@ import pandas as pd
 
 from app import models, schemas
 from app.config import BOT_AUTOMATION_INTERVAL_SECONDS
-from app.core2 import create_paper_order, get_or_create_settings, get_or_create_status, get_or_create_strategy
+from app.core_unified import create_paper_order, get_or_create_settings, get_or_create_status, get_or_create_strategy
 from app.db import SessionLocal
 from app.services_exchange import ExchangeService
 

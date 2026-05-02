@@ -8,7 +8,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from app.config import API_TITLE, API_VERSION
-from app.core2 import ensure_seed_admin
+from app.core_unified import ensure_seed_admin
 from app.db import Base, SessionLocal, apply_runtime_migrations, engine
 from app.models import AppSettings, MarketTick
 from app.routers import auth, backtest, dashboard, logs, paper, settings, strategy

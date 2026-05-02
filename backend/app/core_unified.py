@@ -1,3 +1,10 @@
+"""Consolidated core business logic for the Swing Trade Bot.
+
+This module replaces the former core.py, core2.py and crud.py files,
+which contained duplicated and divergent implementations of the same
+functions.  All routers and services should import from here.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -14,7 +21,7 @@ from app.services_backtest import run_ma_backtest
 from app.services_exchange import ExchangeService
 
 
-def _safe_float(value, default: float = 0.0) -> float:
+def _safe_float(value: float | int | Decimal | None, default: float = 0.0) -> float:
     try:
         v = float(value)
         return v if math.isfinite(v) else default
@@ -22,11 +29,11 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
-def _round2(value) -> float:
+def _round2(value: float | int | Decimal | None) -> float:
     return round(_safe_float(value), 2)
 
 
-def _round4(value) -> float:
+def _round4(value: float | int | Decimal | None) -> float:
     return round(_safe_float(value), 4)
 
 
@@ -40,7 +47,7 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _to_decimal(value) -> Decimal:
+def _to_decimal(value: float | int | str | Decimal) -> Decimal:
     return Decimal(str(value))
 
 
